@@ -6,6 +6,37 @@
 
 #include "tweetnacl.h"
 
+typedef struct {
+  u8 auth_key[crypto_sign_private_key_bytes];
+  u8 encrypt_key[crypto_box_private_key_bytes];
+} asn_crypto_private_keys_t;
+
+typedef struct {
+  u8 auth_key[crypto_sign_public_key_bytes];
+  u8 encrypt_key[crypto_box_public_key_bytes];
+
+  /* Signature of public encrypt key signed by auth key.
+     Known after login request. */
+  u8 self_signed_encrypt_key[crypto_sign_signature_bytes];
+} asn_crypto_public_keys_t;
+
+typedef struct {
+  asn_crypto_private_keys_t private;
+  asn_crypto_public_keys_t public;
+} asn_crypto_keys_t;
+
+/* Receive or transmit. */
+typedef enum {
+  ASN_RX,
+  ASN_TX,
+  ASN_N_RX_TX,
+} asn_rx_or_tx_t;
+
+typedef struct {
+  u8 shared_secret[crypto_box_shared_secret_bytes];
+  u8 nonce[ASN_N_RX_TX][crypto_box_nonce_bytes];
+} asn_crypto_state_t;
+
 /* Everything ending with _request is acknowledged with an ACK PDU. */
 #define foreach_asn_pdu_id                      \
   _ (raw)                                       \
@@ -116,6 +147,16 @@ typedef enum {
 #undef _
   ASN_N_USER_TYPE,
 } asn_user_type_t;
+
+typedef struct {
+  /* ASN_USER_TYPE_* */
+  asn_user_type_t type;
+
+  /* Index into user pool. */
+  u32 index;
+
+  asn_crypto_keys_t keys;
+} asn_user_t;
 
 #define foreach_asn_user_data_type              \
   _ (name)                                      \
@@ -264,41 +305,10 @@ u8 * format_asn_pdu_id (u8 * s, va_list * va)
       return format (s, "unknown 0x%x", id);
     }
 
-  s = format (s, "%U", format_c_identifier, t);
+  vec_add (s, t, strlen (t));
 
   return s;
 }
-
-typedef struct {
-  u8 auth_key[crypto_sign_private_key_bytes];
-  u8 encrypt_key[crypto_box_private_key_bytes];
-} asn_crypto_private_keys_t;
-
-typedef struct {
-  u8 auth_key[crypto_sign_public_key_bytes];
-  u8 encrypt_key[crypto_box_public_key_bytes];
-
-  /* Signature of public encrypt key signed by auth key.
-     Known after login request. */
-  u8 self_signed_encrypt_key[crypto_sign_signature_bytes];
-} asn_crypto_public_keys_t;
-
-typedef struct {
-  asn_crypto_private_keys_t private;
-  asn_crypto_public_keys_t public;
-} asn_crypto_keys_t;
-
-/* Receive or transmit. */
-typedef enum {
-  ASN_RX,
-  ASN_TX,
-  ASN_N_RX_TX,
-} asn_rx_or_tx_t;
-
-typedef struct {
-  u8 shared_secret[crypto_box_shared_secret_bytes];
-  u8 nonce[ASN_N_RX_TX][crypto_box_nonce_bytes];
-} asn_crypto_state_t;
 
 always_inline void
 asn_crypto_increment_nonce (asn_crypto_state_t * s, asn_rx_or_tx_t rt, u32 increment)
@@ -349,13 +359,6 @@ asn_crypto_create_keys (asn_crypto_public_keys_t * public, asn_crypto_private_ke
 
   ASSERT (asn_crypto_is_valid_self_signed_key (&ssk, public));
 }
-
-typedef struct {
-  /* ASN_USER_TYPE_* */
-  asn_user_type_t type;
-
-  asn_crypto_keys_t keys;
-} asn_user_t;
 
 typedef union {
   /* Header index 0; data index 1. */
@@ -470,6 +473,27 @@ asn_socket_free (asn_socket_t * as)
   vec_free (as->tx_pdus);
 }
 
+typedef struct {
+  websocket_main_t websocket_main;
+
+  unix_file_poller_t unix_file_poller;
+  
+  /*Server listen config strings of the form IP[:PORT] */
+  u8 * server_config;
+
+  asn_crypto_keys_t server_keys;
+
+  u8 * client_config;
+
+  u32 verbose;
+
+  asn_socket_t * socket_pool;
+
+  asn_user_t * user_pool;
+
+  uword * user_by_key;
+} asn_main_t;
+
 always_inline void *
 asn_socket_tx_add (asn_socket_t * as, asn_pdu_id_t id, u32 header_bytes)
 {
@@ -571,9 +595,10 @@ void asn_socket_tx (asn_socket_t * as, websocket_socket_t * ws, asn_crypto_state
   websocket_socket_tx_binary_frame (ws);
 }
 
-static void asn_socket_tx_ack_pdu (websocket_main_t * wsm, asn_socket_t * as,
-                                   void * _request,
-                                   asn_ack_pdu_status_t status)
+static void
+asn_socket_tx_ack_pdu (websocket_main_t * wsm, asn_socket_t * as,
+                       void * _request,
+                       asn_ack_pdu_status_t status)
 {
   asn_pdu_header_t * request = _request;
   websocket_socket_t * ws = pool_elt_at_index (wsm->socket_pool, as->websocket_index);
@@ -583,6 +608,42 @@ static void asn_socket_tx_ack_pdu (websocket_main_t * wsm, asn_socket_t * as,
   ack->request_id = request->id;
   ack->status = status;
   asn_socket_tx (as, ws, /* data_crypto_state */ 0);
+}
+
+static clib_error_t *
+asn_socket_rx_ack_pdu (websocket_main_t * wsm,
+                       asn_socket_t * as,
+                       asn_pdu_ack_t * ack)
+{
+  return 0;
+}
+
+static u8 * format_asn_ack_pdu_status (u8 * s, va_list * va)
+{
+  asn_ack_pdu_status_t status = va_arg (*va, asn_ack_pdu_status_t);
+  char * t = 0;
+  switch (status)
+    {
+#define _(f) case ASN_ACK_PDU_STATUS_##f: t = #f; break;
+      foreach_asn_ack_pdu_status
+#undef _
+    default:
+      return format (s, "unknown 0x%x", status);
+    }
+  s = format (s, "%U", format_c_identifier, t);
+  return s;
+}
+
+static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
+{
+  asn_pdu_t * p = va_arg (*va, asn_pdu_t *);
+  asn_pdu_ack_t * ack = asn_pdu_get_header (p);
+
+  s = format (s, "request: %U status: %U",
+              format_asn_pdu_id, ack->request_id,
+              format_asn_ack_pdu_status, ack->status);
+
+  return s;
 }
 
 static clib_error_t *
@@ -650,14 +711,23 @@ static u8 * format_asn_echo_pdu (u8 * s, va_list * va)
   return s;
 }
 
+always_inline asn_user_t *
+asn_main_get_user_by_key (asn_main_t * am, u8 * key)
+{
+  uword * r = hash_get_mem (am->user_by_key, key);
+  return r ? pool_elt_at_index (am->user_pool, r[0]) : 0;
+}
+
 static clib_error_t *
 asn_socket_rx_session_login_request_pdu (websocket_main_t * wsm,
                                          asn_socket_t * as,
                                          asn_pdu_session_login_request_t * req)
 {
+  websocket_socket_t * ws = pool_elt_at_index (wsm->socket_pool, as->websocket_index);
+  asn_main_t * am = uword_to_pointer (ws->opaque[0], asn_main_t *);
+  asn_user_t * au = asn_main_get_user_by_key (am, req->key);
   asn_ack_pdu_status_t status = ASN_ACK_PDU_STATUS_success;
   asn_crypto_self_signed_key_t ssk;
-  asn_user_t * au = 0;
 
   memcpy (ssk.contents, req->key, sizeof (ssk.contents));
   memcpy (ssk.signature, req->signature, sizeof (ssk.signature));
@@ -687,8 +757,10 @@ static u8 * format_asn_session_login_request_pdu (u8 * s, va_list * va)
 {
   asn_pdu_t * p = va_arg (*va, asn_pdu_t *);
   asn_pdu_session_login_request_t * r = asn_pdu_get_header (p);
-  s = format (s, "key %U signature %U",
+  uword indent = format_get_indent (s);
+  s = format (s, "key %U\n%Usignature %U",
               format_hex_bytes, r->key, sizeof (r->key),
+              format_white_space, indent,
               format_hex_bytes, r->signature, sizeof (r->signature));
   return s;
 }
@@ -701,7 +773,6 @@ static u8 * format_asn_session_login_request_pdu (u8 * s, va_list * va)
     { return s; }
 
 _ (raw)
-_ (ack)
 _ (file_read_and_lock_request)
 _ (file_read_no_lock_request)
 _ (file_remove_request)
@@ -740,35 +811,73 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
   return s;
 }
 
-typedef struct {
-  websocket_main_t websocket_main;
-
-  unix_file_poller_t unix_file_poller;
-  
-  /*Server listen config strings of the form IP[:PORT] */
-  u8 * server_config;
-
-  asn_crypto_keys_t server_keys;
-
-  u8 * client_config;
-
-  u32 verbose;
-
-  asn_socket_t * asn_socket_pool;
-
-  asn_user_t * asn_user_pool;
-} asn_main_t;
-
 always_inline asn_socket_t *
 asn_main_new_socket (asn_main_t * am, u32 websocket_index)
 {
   asn_socket_t * as;
-  pool_get (am->asn_socket_pool, as);
+  pool_get (am->socket_pool, as);
   memset (as, 0, sizeof (as[0]));
-  as->index = as - am->asn_socket_pool;
+  as->index = as - am->socket_pool;
   as->websocket_index = websocket_index;
   as->asn_user_index = ~0;
   return as;
+}
+
+always_inline u8 *
+asn_user_key_to_mem (asn_main_t * am, uword k)
+{
+  asn_user_t * u;
+  u8 * m;
+  if (k % 2)
+    {
+      u = pool_elt_at_index (am->user_pool, k / 2);
+      m = u->keys.public.encrypt_key;
+    }
+  else
+    m = uword_to_pointer (k, u8 *);
+
+  return m;
+}
+
+static uword
+asn_user_by_key_key_sum (hash_t * h, uword key)
+{
+  asn_main_t * am = uword_to_pointer (h->user, asn_main_t *);
+  u8 * k = asn_user_key_to_mem (am, key);
+  return hash_memory (k, STRUCT_SIZE_OF (asn_user_t, keys.public.encrypt_key), /* hash_seed */ 0);
+}
+
+static uword
+asn_user_by_key_key_equal (hash_t * h, uword key1, uword key2)
+{
+  asn_main_t * am = uword_to_pointer (h->user, asn_main_t *);
+  u8 * k1 = asn_user_key_to_mem (am, key1);
+  u8 * k2 = asn_user_key_to_mem (am, key2);
+  return 0 == memcmp (k1, k2, STRUCT_SIZE_OF (asn_user_t, keys.public.encrypt_key));
+}
+
+always_inline uword
+asn_main_new_user_with_type (asn_main_t * am, asn_user_type_t with_type)
+{
+  asn_user_t * au;
+
+  pool_get (am->user_pool, au);
+  au->index = au - am->user_pool;
+  au->type = with_type;
+  asn_crypto_create_keys (&au->keys.public, &au->keys.private);
+
+  if (! am->user_by_key)
+    am->user_by_key = hash_create2 (/* elts */ 0,
+                                    /* user */ pointer_to_uword (am),
+                                    /* value_bytes */ sizeof (uword),
+                                    asn_user_by_key_key_sum,
+                                    asn_user_by_key_key_equal,
+                                    /* format pair/arg */
+                                    0, 0);
+
+  hash_set (am->user_by_key, 1 + 2*au->index, au->index);
+
+  return au - am->user_pool;
 }
 
 typedef struct {
@@ -781,7 +890,7 @@ clib_error_t *
 asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 * rx_payload, u32 n_payload_bytes)
 {
   asn_main_t * am = uword_to_pointer (ws->opaque[0], asn_main_t *);
-  asn_socket_t * as = pool_elt_at_index (am->asn_socket_pool, ws->opaque[1]);
+  asn_socket_t * as = pool_elt_at_index (am->socket_pool, ws->opaque[1]);
   clib_error_t * error = 0;
   uword n_left = n_payload_bytes;
   u8 * payload = rx_payload;
@@ -905,7 +1014,7 @@ asn_main_server_did_receive_handshake (websocket_main_t * wsm, u32 ws_index)
   websocket_socket_t * ws = pool_elt_at_index (wsm->socket_pool, ws_index);
   http_request_or_response_t * r = &ws->server.http_handshake_request;
   asn_main_t * am = uword_to_pointer (ws->opaque[0], asn_main_t *);
-  asn_socket_t * as = pool_elt_at_index (am->asn_socket_pool, ws->opaque[1]);
+  asn_socket_t * as = pool_elt_at_index (am->socket_pool, ws->opaque[1]);
   u8 * key = 0;
 
   if (! r->request.path || 0 != strcmp ((char *) r->request.path, "ws/asn"))
@@ -937,10 +1046,10 @@ void asn_main_connection_will_close (websocket_main_t * wsm, u32 ws_index, clib_
 {
   websocket_socket_t * ws = pool_elt_at_index (wsm->socket_pool, ws_index);
   asn_main_t * am = uword_to_pointer (ws->opaque[0], asn_main_t *);
-  asn_socket_t * as = pool_elt_at_index (am->asn_socket_pool, ws->opaque[1]);
+  asn_socket_t * as = pool_elt_at_index (am->socket_pool, ws->opaque[1]);
 
   asn_socket_free (as);
-  pool_put (am->asn_socket_pool, as);
+  pool_put (am->socket_pool, as);
 
   ws->opaque[1] = ~0;
 
@@ -1022,16 +1131,17 @@ int test_asn_main (unformat_input_t * input)
 
   {
     int i;
-    asn_user_t * asn_user;
     f64 last_scan_time = unix_time_now ();
     u8 * client_url_path;
+    asn_user_t * au;
+    u32 asn_user_index;
 
-    pool_get (am->asn_user_pool, asn_user);
-    asn_user->type = ASN_USER_TYPE_actual;
-    asn_crypto_create_keys (&asn_user->keys.public, &asn_user->keys.private);
+    asn_user_index = asn_main_new_user_with_type (am, ASN_USER_TYPE_actual);
 
+    au = pool_elt_at_index (am->user_pool, asn_user_index);
     client_url_path = format (0, "ws://%s/ws/asn?key=%U", am->client_config,
-                              format_hex_bytes, asn_user->keys.public.encrypt_key, sizeof (asn_user->keys.public.encrypt_key));
+                              format_hex_bytes,
+                              au->keys.public.encrypt_key, sizeof (au->keys.public.encrypt_key));
 
     for (i = 0; i < tm->n_clients; i++)
       {
@@ -1049,9 +1159,10 @@ int test_asn_main (unformat_input_t * input)
         ws->opaque[0] = pointer_to_uword (tm);
         ws->opaque[1] = as->index;
 
-        as->asn_user_index = asn_user - am->asn_user_pool;
+        as->asn_user_index = asn_user_index;
 
-        crypto_box_beforenm (as->crypto_state.shared_secret, am->server_keys.public.encrypt_key, asn_user->keys.private.encrypt_key);
+        crypto_box_beforenm (as->crypto_state.shared_secret, am->server_keys.public.encrypt_key,
+                             au->keys.private.encrypt_key);
       }
 
     vec_free (client_url_path);
@@ -1070,12 +1181,12 @@ int test_asn_main (unformat_input_t * input)
           {
             websocket_close_all_sockets_with_no_handshake (wsm);
 
-            pool_foreach (as, am->asn_socket_pool, ({
+            pool_foreach (as, am->socket_pool, ({
               ws = pool_elt_at_index (wsm->socket_pool, as->websocket_index);
               if (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_CLIENT)
                 {
                   if (0) asn_socket_tx_echo_pdu (wsm, as);
-                  else asn_socket_tx_session_login_request_pdu (wsm, as, asn_user);
+                  else asn_socket_tx_session_login_request_pdu (wsm, as, au);
                 }
             }));
 
