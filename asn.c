@@ -489,8 +489,6 @@ typedef struct {
 
   asn_session_state_t session_state;
 
-  u32 asn_user_index;
-
   asn_crypto_ephemeral_keys_t ephemeral_keys;
 
   /* Nonce and shared secret. */
@@ -1261,7 +1259,6 @@ asn_main_new_socket (asn_main_t * am, u32 websocket_index)
   memset (as, 0, sizeof (as[0]));
   as->index = as - am->socket_pool;
   as->websocket_index = websocket_index;
-  as->asn_user_index = ~0;
   as->session_state = ASN_SESSION_STATE_open;
   return as;
 }
@@ -1453,6 +1450,76 @@ void asn_main_connection_will_close (websocket_main_t * wsm, u32 ws_index, clib_
     }
 }
 
+clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config)
+{
+  websocket_main_t * wsm = &am->websocket_main;
+  websocket_socket_t * ws;
+  asn_socket_t * as;
+  asn_crypto_ephemeral_keys_t ek;
+  u32 client_ws_index;
+  clib_error_t * error = 0;
+
+  crypto_box_keypair (ek.public, ek.private);
+
+  error = websocket_client_add_connection (wsm, &client_ws_index,
+                                           "ws://%s/ws/asn?key=%U",
+                                           socket_config,
+                                           format_hex_bytes, ek.public, sizeof (ek.public));
+  if (error)
+    return error;
+
+  as = asn_main_new_socket (am, client_ws_index);
+
+  ws = pool_elt_at_index (wsm->socket_pool, client_ws_index);
+  ws->opaque[0] = pointer_to_uword (am);
+  ws->opaque[1] = as->index;
+
+  as->ephemeral_keys = ek;
+  crypto_box_beforenm (as->ephemeral_crypto_state.shared_secret,
+                       am->server_keys.public.encrypt_key,
+                       ek.private);
+  return error;
+}
+
+clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config)
+{
+  websocket_main_t * wsm = &am->websocket_main;
+  websocket_socket_t * ws;
+  clib_error_t * error = 0;
+  u32 listen_ws_index;
+
+  error = websocket_server_add_listener (wsm, (char *) socket_config, &listen_ws_index);
+  if (error)
+    return error;
+
+  ws = pool_elt_at_index (wsm->socket_pool, listen_ws_index);
+  ws->opaque[0] = pointer_to_uword (am);
+  ws->opaque[1] = ~0;
+
+  if (! am->client_config)
+    am->client_config = format (0, "%U%c", format_sockaddr, &ws->clib_socket.self_addr, 0);
+
+  asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private);
+
+  return error;
+}
+
+clib_error_t * asn_main_init (asn_main_t * am)
+{
+  clib_error_t * error = 0;
+  websocket_main_t * wsm = &am->websocket_main;
+
+  wsm->unix_file_poller = &am->unix_file_poller;
+  wsm->rx_frame_payload = asn_main_rx_frame_payload;
+  wsm->new_client_for_server = asn_main_new_client_for_server;
+  wsm->connection_will_close = asn_main_connection_will_close;
+  wsm->did_receive_handshake = asn_main_server_did_receive_handshake;
+
+  error = websocket_init (wsm);
+
+  return error;
+}
+
 typedef struct {
   asn_main_t asn_main;
   
@@ -1520,33 +1587,15 @@ int test_asn_main (unformat_input_t * input)
         }
     }
 
-  wsm->unix_file_poller = &am->unix_file_poller;
-  wsm->rx_frame_payload = asn_main_rx_frame_payload;
-  wsm->new_client_for_server = asn_main_new_client_for_server;
-  wsm->connection_will_close = asn_main_connection_will_close;
-  wsm->did_receive_handshake = asn_main_server_did_receive_handshake;
-
-  error = websocket_init (wsm);
+  error = asn_main_init (am);
   if (error)
     goto done;
 
   if (am->server_config)
     {
-      u32 listen_ws_index;
-      websocket_socket_t * ws;
-
-      error = websocket_server_add_listener (wsm, (char *) am->server_config, &listen_ws_index);
+      error = asn_add_listener (am, am->server_config);
       if (error)
         goto done;
-
-      ws = pool_elt_at_index (wsm->socket_pool, listen_ws_index);
-      ws->opaque[0] = pointer_to_uword (am);
-      ws->opaque[1] = ~0;
-
-      if (! am->client_config)
-        am->client_config = format (0, "%U%c", format_sockaddr, &ws->clib_socket.self_addr, 0);
-
-      asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private);
     }
 
   {
@@ -1561,32 +1610,9 @@ int test_asn_main (unformat_input_t * input)
 
     for (i = 0; i < tm->n_clients; i++)
       {
-        u32 client_ws_index;
-        asn_socket_t * as;
-        websocket_socket_t * ws;
-        asn_crypto_ephemeral_keys_t ek;
-
-        crypto_box_keypair (ek.public, ek.private);
-
-        error = websocket_client_add_connection (wsm, &client_ws_index,
-                                                 "ws://%s/ws/asn?key=%U",
-                                                 am->client_config,
-                                                 format_hex_bytes, ek.public, sizeof (ek.public));
+        error = asn_add_connection (am, am->client_config);
         if (error)
           goto done;
-
-        as = asn_main_new_socket (am, client_ws_index);
-
-        ws = pool_elt_at_index (wsm->socket_pool, client_ws_index);
-        ws->opaque[0] = pointer_to_uword (tm);
-        ws->opaque[1] = as->index;
-
-        as->asn_user_index = asn_user_index;
-
-        as->ephemeral_keys = ek;
-        crypto_box_beforenm (as->ephemeral_crypto_state.shared_secret,
-                             am->server_keys.public.encrypt_key,
-                             ek.private);
       }
 
     while (pool_elts (am->unix_file_poller.file_pool) > (am->server_config ? 1 : 0))
