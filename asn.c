@@ -1,5 +1,4 @@
 #include <uclib/uclib.h>
-#include <uclib/uclib.c>
 
 #ifndef included_asn_h
 #define included_asn_h

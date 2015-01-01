@@ -76,7 +76,7 @@ POST_INSTALL = :
 NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
-bin_PROGRAMS = asn$(EXEEXT)
+bin_PROGRAMS = asn$(EXEEXT) t$(EXEEXT)
 subdir = .
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) depcomp compile \
@@ -92,9 +92,12 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)"
 PROGRAMS = $(bin_PROGRAMS)
-am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT)
+am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT) uclib.$(OBJEXT)
 asn_OBJECTS = $(am_asn_OBJECTS)
 asn_LDADD = $(LDADD)
+am_t_OBJECTS = t.$(OBJEXT) uclib.$(OBJEXT)
+t_OBJECTS = $(am_t_OBJECTS)
+t_LDADD = $(LDADD)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -123,8 +126,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(asn_SOURCES)
-DIST_SOURCES = $(asn_SOURCES)
+SOURCES = $(asn_SOURCES) $(t_SOURCES)
+DIST_SOURCES = $(asn_SOURCES) $(t_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -254,7 +257,8 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 AM_CFLAGS = -Wall
-asn_SOURCES = asn.c tweetnacl.c
+asn_SOURCES = asn.c tweetnacl.c uclib.c
+t_SOURCES = t.c uclib.c
 all: all-am
 
 .SUFFIXES:
@@ -340,6 +344,10 @@ asn$(EXEEXT): $(asn_OBJECTS) $(asn_DEPENDENCIES) $(EXTRA_asn_DEPENDENCIES)
 	@rm -f asn$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(asn_OBJECTS) $(asn_LDADD) $(LIBS)
 
+t$(EXEEXT): $(t_OBJECTS) $(t_DEPENDENCIES) $(EXTRA_t_DEPENDENCIES) 
+	@rm -f t$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(t_OBJECTS) $(t_LDADD) $(LIBS)
+
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
 
@@ -347,7 +355,9 @@ distclean-compile:
 	-rm -f *.tab.c
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/asn.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/t.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tweetnacl.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uclib.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\
