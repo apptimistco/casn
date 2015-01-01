@@ -112,6 +112,20 @@ typedef struct {
 always_inline void asn_app_photo_free (asn_app_photo_t * p)
 { vec_free (p->thumbnail_as_jpeg_data); }
 
+void
+serialize_asn_app_photo (serialize_main_t * m, va_list * va)
+{
+  asn_app_photo_t * p = va_arg (*va, asn_app_photo_t *);
+  vec_serialize (m, p->thumbnail_as_jpeg_data, serialize_vec_8);
+}
+
+void
+unserialize_asn_app_photo (serialize_main_t * m, va_list * va)
+{
+  asn_app_photo_t * p = va_arg (*va, asn_app_photo_t *);
+  vec_unserialize (m, &p->thumbnail_as_jpeg_data, unserialize_vec_8);
+}
+
 typedef struct {
   f64 longitude, latitude;
 } asn_app_position_on_earth_t;
@@ -208,6 +222,11 @@ always_inline void asn_app_attribute_free (asn_app_attribute_t * a)
     case ASN_APP_ATTRIBUTE_TYPE_f64:
       vec_free (a->values.as_u8);
       break;
+    case ASN_APP_ATTRIBUTE_TYPE_string:
+      vec_foreach_index (i, a->values.as_string)
+	vec_free (a->values.as_string[i]);
+      vec_free (a->values.as_string);
+      break;
     default:
       ASSERT (0);
       break;
@@ -238,6 +257,20 @@ always_inline void asn_app_user_free (asn_app_user_t * u)
   asn_app_message_union_vector_free (&u->messages_by_increasing_time);
 
   hash_free (u->user_friends);
+}
+
+void
+serialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  vec_serialize (m, u->photos, serialize_asn_app_photo);
+}
+
+void
+unserialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  vec_unserialize (m, &u->photos, serialize_asn_app_photo);
 }
 
 typedef struct {
@@ -419,54 +452,78 @@ u32 asn_app_add_user_attribute_oneof (asn_app_main_t * am, u32 ai, char * fmt, .
   /* Choice must be unique. */
   ASSERT (! hash_get (pa->oneof_index_by_value, choice));
 
+  /* Single choice oneofs always have value 0 being undefined value. */
+  if (pa->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice && vec_len (pa->oneof_values) == 0)
+    vec_add1 (pa->oneof_values, 0);
+
   uword vi = vec_len (pa->oneof_values);
+
   hash_set_mem (pa->oneof_index_by_value, choice, vi);
   vec_add1 (pa->oneof_values, choice);
 
-  {
-    if (vi == 1 + BITS (u8))
-      {
-	u32 i;
-	u16 * v16;
-	vec_clone (v16, pa->values.as_u8);
-	vec_foreach_index (i, pa->values.as_u8)
-	  v16[i] = pa->values.as_u8[i];
-	vec_free (pa->values.as_u8);
-	pa->values.as_u16 = v16;
-      }
-    else if (vi == 1 + BITS (u16))
-      {
-	u32 i;
-	u32 * v32;
-	vec_clone (v32, pa->values.as_u16);
-	vec_foreach_index (i, pa->values.as_u16)
-	  v32[i] = pa->values.as_u16[i];
-	vec_free (pa->values.as_u16);
-	pa->values.as_u32 = v32;
-      }
-    else if (vi == 1 + BITS (u32))
-      {
-	u32 i;
-	u64 * v64;
-	vec_clone (v64, pa->values.as_u32);
-	vec_foreach_index (i, pa->values.as_u32)
-	  v64[i] = pa->values.as_u32[i];
-	vec_free (pa->values.as_u32);
-	pa->values.as_u64 = v64;
-      }
-    else if (vi == 1 + BITS (u64))
-      {
-	u32 i;
-	uword ** as_bitmap;
-	vec_clone (as_bitmap, pa->values.as_u64);
-	vec_foreach_index (i, pa->values.as_u64)
-	  vec_add1 (as_bitmap[i], pa->values.as_u64[i]);
-	vec_free (pa->values.as_u64);
-	pa->values.as_bitmap = as_bitmap;
-      }
-  }
+  if (vi == 1 + BITS (u8))
+    {
+      u32 i;
+      u16 * v16;
+      vec_clone (v16, pa->values.as_u8);
+      vec_foreach_index (i, pa->values.as_u8)
+	v16[i] = pa->values.as_u8[i];
+      vec_free (pa->values.as_u8);
+      pa->values.as_u16 = v16;
+    }
+  else if (vi == 1 + BITS (u16))
+    {
+      u32 i;
+      u32 * v32;
+      vec_clone (v32, pa->values.as_u16);
+      vec_foreach_index (i, pa->values.as_u16)
+	v32[i] = pa->values.as_u16[i];
+      vec_free (pa->values.as_u16);
+      pa->values.as_u32 = v32;
+    }
+  else if (vi == 1 + BITS (u32))
+    {
+      u32 i;
+      u64 * v64;
+      vec_clone (v64, pa->values.as_u32);
+      vec_foreach_index (i, pa->values.as_u32)
+	v64[i] = pa->values.as_u32[i];
+      vec_free (pa->values.as_u32);
+      pa->values.as_u64 = v64;
+    }
+  else if (vi == 1 + BITS (u64))
+    {
+      u32 i;
+      uword ** as_bitmap;
+      vec_clone (as_bitmap, pa->values.as_u64);
+      vec_foreach_index (i, pa->values.as_u64)
+	vec_add1 (as_bitmap[i], pa->values.as_u64[i]);
+      vec_free (pa->values.as_u64);
+      pa->values.as_bitmap = as_bitmap;
+    }
 
   return vi;
+}
+
+#define foreach_siren_user_asn_app_attribute	\
+  _ (string, first_name)			\
+  _ (string, last_name)
+
+typedef enum {
+#define _(type,name) SIREN_USER_ATTRIBUTE_##name,
+  foreach_siren_user_asn_app_attribute
+#undef _
+} siren_user_attribute_type_t;
+
+always_inline void
+asn_app_set_user_attribute_string (asn_app_main_t * am, u32 ai, u32 ui, char * fmt, ...)
+{
+  u8 ** p;
+  va_list va;
+  va_start (va, fmt);
+  p = asn_app_user_attribute (am, ai, ui);
+  *p = va_format (*p, fmt, &va);
+  va_end (va);
 }
 
 int main (int argc, char * argv[])
@@ -475,17 +532,23 @@ int main (int argc, char * argv[])
 
   clib_warning ("%U", format_clib_mem_usage, /* verbose */ 0);
 
-  u32 ai = asn_app_add_user_attribute (am, ASN_APP_ATTRIBUTE_TYPE_u8);
+  {
+    u32 ai;
+#define _(type,name)							\
+  ai = asn_app_add_user_attribute (am, ASN_APP_ATTRIBUTE_TYPE_##type);	\
+  ASSERT (ai == SIREN_USER_ATTRIBUTE_##name);
+    foreach_siren_user_asn_app_attribute;
+#undef _
+  }
 
   {
     asn_app_user_t * au;
-    u8 * v;
 
     pool_get (am->user_pool, au);
     au->index = au - am->user_pool;
 
-    v = asn_app_user_attribute (am, ai, au->index);
-    *v = 99;
+    asn_app_set_user_attribute_string (am, SIREN_USER_ATTRIBUTE_first_name, au->index, "Eliot");
+    asn_app_set_user_attribute_string (am, SIREN_USER_ATTRIBUTE_last_name, au->index, "Dresselhaus");
   }    
 
   asn_app_main_free (am);
