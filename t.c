@@ -547,9 +547,9 @@ unserialize_asn_app_main (serialize_main_t * m, va_list * va)
 	vec_unserialize (m, &name, unserialize_vec_8);
 	if (! (p = hash_get_mem (am->user_attribute_by_name, name)))
 	  serialize_error_return (m, "unknown attribute named `%v'", name);
+	vec_free (name);
 	a = vec_elt_at_index (am->user_attributes, *p);
 	am->user_attribute_map_for_unserialize[i] = a->index;
-	vec_free (name);
       }
   }
 

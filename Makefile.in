@@ -92,12 +92,12 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)"
 PROGRAMS = $(bin_PROGRAMS)
-am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT) uclib.$(OBJEXT)
+am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT)
 asn_OBJECTS = $(am_asn_OBJECTS)
-asn_LDADD = $(LDADD)
-am_t_OBJECTS = t.$(OBJEXT) uclib.$(OBJEXT)
+asn_DEPENDENCIES =
+am_t_OBJECTS = t.$(OBJEXT)
 t_OBJECTS = $(am_t_OBJECTS)
-t_LDADD = $(LDADD)
+t_DEPENDENCIES =
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -257,8 +257,10 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 AM_CFLAGS = -Wall
-asn_SOURCES = asn.c tweetnacl.c uclib.c
-t_SOURCES = t.c uclib.c
+asn_SOURCES = asn.c tweetnacl.c
+asn_LDADD = -luclib
+t_SOURCES = t.c
+t_LDADD = -luclib
 all: all-am
 
 .SUFFIXES:
@@ -357,7 +359,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/asn.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/t.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tweetnacl.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uclib.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\
