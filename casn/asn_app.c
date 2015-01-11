@@ -427,11 +427,12 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
   }
 
   uword vi = vec_len (pa->oneof_values);
+  uword is_single = pa->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice;
 
   hash_set_mem (pa->oneof_index_by_value, choice, vi);
   vec_add1 (pa->oneof_values, choice);
 
-  if (vi == 1 + BITS (u8))
+  if ((is_single && vi == (1 << BITS (u8))) || (! is_single && vi == BITS (u8)))
     {
       u32 i;
       u16 * v16;
@@ -441,7 +442,7 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       vec_free (pa->values.as_u8);
       pa->values.as_u16 = v16;
     }
-  else if (vi == 1 + BITS (u16))
+  else if ((is_single && vi == (1 << BITS (u16))) || (! is_single && vi == BITS (u16)))
     {
       u32 i;
       u32 * v32;
@@ -451,7 +452,7 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       vec_free (pa->values.as_u16);
       pa->values.as_u32 = v32;
     }
-  else if (vi == 1 + BITS (u32))
+  else if ((is_single && vi == ((u64) 1 << (u64) BITS (u32))) || (! is_single && vi == BITS (u32)))
     {
       u32 i;
       u64 * v64;
@@ -461,7 +462,8 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       vec_free (pa->values.as_u32);
       pa->values.as_u64 = v64;
     }
-  else if (vi == 1 + BITS (u64))
+
+  else if (! is_single && vi == BITS (u32))
     {
       u32 i;
       uword ** as_bitmap;
