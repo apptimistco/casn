@@ -2,10 +2,7 @@ AUTOMAKE_OPTIONS = foreign subdir-objects
 
 AM_CFLAGS = -Wall
 
-bin_PROGRAMS = t # asn
+lib_LIBRARIES = libcasn.a
 
-asn_SOURCES = asn.c tweetnacl.c
-asn_LDADD = -luclib
-
-t_SOURCES = t.c casn/asn_app.c
-t_LDADD = -luclib
+libcasn_a_SOURCES = casn/asn_app.c
+nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
