@@ -76,7 +76,7 @@ POST_INSTALL = :
 NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
-bin_PROGRAMS = asn$(EXEEXT)
+bin_PROGRAMS = t$(EXEEXT)
 subdir = .
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) depcomp compile \
@@ -92,9 +92,10 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)"
 PROGRAMS = $(bin_PROGRAMS)
-am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT)
-asn_OBJECTS = $(am_asn_OBJECTS)
-asn_LDADD = $(LDADD)
+am__dirstamp = $(am__leading_dot)dirstamp
+am_t_OBJECTS = t.$(OBJEXT) casn/asn_app.$(OBJEXT)
+t_OBJECTS = $(am_t_OBJECTS)
+t_DEPENDENCIES =
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -123,8 +124,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(asn_SOURCES)
-DIST_SOURCES = $(asn_SOURCES)
+SOURCES = $(t_SOURCES)
+DIST_SOURCES = $(t_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -255,6 +256,9 @@ top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 AM_CFLAGS = -Wall
 asn_SOURCES = asn.c tweetnacl.c
+asn_LDADD = -luclib
+t_SOURCES = t.c casn/asn_app.c
+t_LDADD = -luclib
 all: all-am
 
 .SUFFIXES:
@@ -335,19 +339,28 @@ uninstall-binPROGRAMS:
 
 clean-binPROGRAMS:
 	-test -z "$(bin_PROGRAMS)" || rm -f $(bin_PROGRAMS)
+casn/$(am__dirstamp):
+	@$(MKDIR_P) casn
+	@: > casn/$(am__dirstamp)
+casn/$(DEPDIR)/$(am__dirstamp):
+	@$(MKDIR_P) casn/$(DEPDIR)
+	@: > casn/$(DEPDIR)/$(am__dirstamp)
+casn/asn_app.$(OBJEXT): casn/$(am__dirstamp) \
+	casn/$(DEPDIR)/$(am__dirstamp)
 
-asn$(EXEEXT): $(asn_OBJECTS) $(asn_DEPENDENCIES) $(EXTRA_asn_DEPENDENCIES) 
-	@rm -f asn$(EXEEXT)
-	$(AM_V_CCLD)$(LINK) $(asn_OBJECTS) $(asn_LDADD) $(LIBS)
+t$(EXEEXT): $(t_OBJECTS) $(t_DEPENDENCIES) $(EXTRA_t_DEPENDENCIES) 
+	@rm -f t$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(t_OBJECTS) $(t_LDADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
+	-rm -f casn/*.$(OBJEXT)
 
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/asn.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tweetnacl.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/t.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/asn_app.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\
@@ -620,6 +633,8 @@ clean-generic:
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
 	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
+	-rm -f casn/$(DEPDIR)/$(am__dirstamp)
+	-rm -f casn/$(am__dirstamp)
 
 maintainer-clean-generic:
 	@echo "This command is intended for maintainers to use"
@@ -630,7 +645,7 @@ clean-am: clean-binPROGRAMS clean-generic mostlyclean-am
 
 distclean: distclean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
-	-rm -rf ./$(DEPDIR)
+	-rm -rf ./$(DEPDIR) casn/$(DEPDIR)
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -678,7 +693,7 @@ installcheck-am:
 maintainer-clean: maintainer-clean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
 	-rm -rf $(top_srcdir)/autom4te.cache
-	-rm -rf ./$(DEPDIR)
+	-rm -rf ./$(DEPDIR) casn/$(DEPDIR)
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

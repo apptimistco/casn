@@ -1,5 +1,4 @@
 #include <uclib/uclib.h>
-#include <uclib/uclib.c>
 
 #ifndef included_asn_h
 #define included_asn_h
@@ -43,28 +42,16 @@ typedef struct {
 } asn_crypto_state_t;
 
 /* Everything ending with _request is acknowledged with an ACK PDU. */
-#define foreach_asn_pdu_id                      \
-  _ (raw)                                       \
-  _ (ack)                                       \
-  _ (echo)                                      \
-  _ (file_read_and_lock_request)                \
-  _ (file_read_no_lock_request)                 \
-  _ (file_remove_request)                       \
-  _ (file_write_request)                        \
-  _ (head_report)                               \
-  _ (mark_request)                              \
-  _ (mark_report)                               \
-  _ (message_request)                           \
-  _ (session_login_request)                     \
-  _ (session_pause_request)                     \
-  _ (session_quit_request)                      \
-  _ (session_redirect_request)                  \
-  _ (session_resume_request)                    \
-  _ (trace_request)                             \
-  _ (user_add_request)                          \
-  _ (user_del_request)                          \
-  _ (user_search_request)                       \
-  _ (user_vouch_request)
+#define foreach_asn_pdu_id              \
+  _ (unused)                            \
+  _ (ack)                               \
+  _ (exec)                              \
+  _ (login)                             \
+  _ (pause)                             \
+  _ (quit)                              \
+  _ (redirect)                          \
+  _ (resume)                            \
+  _ (blob)
 
 typedef enum {
 #define _(f) ASN_PDU_##f,
@@ -73,25 +60,22 @@ typedef enum {
   ASN_N_PDU,
 } asn_pdu_id_t;
 
-/* ASN PDUs have header + data sections encrypted with possibly different crypto state. */
-typedef enum {
-  ASN_PDU_SECTION_TYPE_HEADER,
-  ASN_PDU_SECTION_TYPE_DATA,
-  ASN_PDU_N_SECTION_TYPE,
-} asn_pdu_section_type_t;
-
-#define foreach_asn_pdu_section_type(st) for (st = 0; st < ASN_PDU_N_SECTION_TYPE; st++)
-
-/* Prologue as it appears on the wire. */
 typedef CLIB_PACKED (struct {
-  /* Header and data (payload) sizes in bytes. */
-  u32 n_bytes_in_section[ASN_PDU_N_SECTION_TYPE];
+  /* More flag indicates more segments follow else end of PDU. */
+#define ASN_PDU_SEGMENT_HEADER_LOG2_MORE_FLAG (15)
+#define ASN_PDU_SEGMENT_HEADER_MORE_FLAG (1 << ASN_PDU_SEGMENT_HEADER_LOG2_MORE_FLAG)
+  u16 n_bytes_in_segment_and_more_flag;
 
-  /* Authentication data for header and data sections. */
-  u8 section_auth[ASN_PDU_N_SECTION_TYPE][16];
+  /* Up to 4094 bytes of data follow. */
+  u8 data[0];
+}) asn_pdu_segment_header_t;
 
-  u8 header_data[0];
-}) asn_pdu_prologue_t;
+typedef CLIB_PACKED (struct {
+  asn_pdu_segment_header_t header;
+  u8 data[4096 - sizeof (asn_pdu_segment_header_t)];
+}) asn_pdu_full_segment_t;
+
+#define ASN_PDU_MAX_N_BYTES (4096 - sizeof (asn_pdu_segment_header_t))
 
 typedef CLIB_PACKED (struct {
   /* ASN version: set to 0. */
@@ -99,6 +83,12 @@ typedef CLIB_PACKED (struct {
 
   /* PDU id. */
   u8 id;
+
+  /* Identifies request. */
+  union {
+    u8 request_id[8];
+    u8 blob_magic[8];           /* "asnmagic\0" for blobs. */
+  };
 
   /* More header plus data follows. */
   u8 data[0];
@@ -126,22 +116,12 @@ typedef enum {
 typedef CLIB_PACKED (struct {
   asn_pdu_header_t header;
 
-  /* ID of request. */
-  u8 request_id;
-
   /* ASN_ACK_PDU_STATUS_* */
   u8 status;
-}) asn_pdu_ack_t;
 
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  /* 0 for request; non-zero for reply. */
-  u8 is_reply;
-
-  /* Data follows.  Number of bytes determined by size of header in prologue. */
+  /* Data follows. */
   u8 data[0];
-}) asn_pdu_echo_t;
+}) asn_pdu_ack_t;
 
 #define foreach_asn_user_type \
   _ (actual) _ (forum) _ (bridge)
@@ -182,42 +162,6 @@ typedef struct {
   };
 } asn_user_t;
 
-#define foreach_asn_user_data_type              \
-  _ (name)                                      \
-  _ (facebook_id)                               \
-  _ (facebook_authentication_token)
-
-typedef enum {
-#define _(f) ASN_USER_DATA_##f,
-  foreach_asn_user_data_type
-#undef _
-  ASN_N_USER_DATA_TYPE,
-} asn_user_data_type_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  /* ASN_USER_TYPE_* */
-  u8 user_type;
-
-  /* Data associated with user (name, facebook id, ...). */
-  u8 user_data_n_bytes[ASN_N_USER_DATA_TYPE];
-
-  /* Encryption and authentication keys for new user. */
-  u8 public_encryption_key[32];
-  u8 public_authentication_key[32];
-
-  /* User data fields follow. */
-  u8 user_data[0];
-}) asn_pdu_user_add_request_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  /* Key for user to delete. */
-  u8 key[32];
-}) asn_pdu_user_del_request_t;
-
 typedef CLIB_PACKED (struct {
   asn_pdu_header_t header;
 
@@ -226,92 +170,14 @@ typedef CLIB_PACKED (struct {
 
   /* ed25519 signature of above key signed by user's private authentication key. */
   u8 signature[64];
-}) asn_pdu_session_login_request_t;
+}) asn_pdu_session_login_t;
 
 typedef CLIB_PACKED (struct {
   asn_pdu_header_t header;
 
-  /* Public encryption key of user. */
-  u8 key[32];
-
-  /* New message head for this user. */
-  u8 head[64];
-}) asn_pdu_head_report_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  /* Nano-seconds since Jan 1 1970 UTC. */
-  u64 time_stamp_in_nsec;
-
-  /* Public keys TO -> FROM. */
-  u8 to_user[32];
-  u8 from_user[32];
-}) asn_pdu_message_request_t;
-
-/* Format of message file TO_USER/messages/HEAD. */
-typedef CLIB_PACKED (struct {
-  /* ID of previous message (sha512 sum of contents). */
-  u8 prev_head[64];
-
-  /* Number of bytes of re-encrypted header that follow. */
-  u8 n_header_bytes;
-
-  /* Message header re-encrypted from SELF -> TO. */
-  u8 header[0];
-
-  /* Encrypted message data follows.  Encrypted FROM -> TO. */
+  /* Null terminated strings follow. */
   u8 data[0];
-}) asn_message_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  /* Name follows.  Header length implies size. */
-  u8 name[0];
-}) asn_pdu_file_request_t;
-
-typedef struct {
-  /* Latitude and longitude in degrees.
-     Latitude [-180:180]
-     Longitude [-90:90]. */
-  f64 latitude, longitude;
-
-  /* Elevation in meters. */
-  f64 elevation_in_meters;
-} asn_location_t;
-
-#define foreach_asn_mark_request_command        \
-  _ (set_private_location)                      \
-  _ (unset_private_location)                    \
-  _ (set_public_location)                       \
-  _ (unset_public_location)                     \
-  _ (start_scan_of_nearby_users)                \
-  _ (stop_scan_of_nearby_users)
-
-typedef enum {
-#define _(f) ASN_MARK_REQUEST_COMMAND_##f,
-  foreach_asn_mark_request_command
-#undef _
-  ASN_N_MARK_REQUEST_COMMAND,
-} asn_mark_request_command_type_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  asn_location_t location;
-
-  /* ASN_MARK_REQUEST_COMMAND_* */
-  u8 command;
-}) asn_pdu_mark_request_t;
-
-typedef CLIB_PACKED (struct {
-  asn_pdu_header_t header;
-
-  u8 user[32];
-
-  asn_location_t location;
-}) asn_pdu_mark_report_t;
+}) asn_pdu_exec_t;
 
 #endif /* included_asn_h */
 
@@ -384,91 +250,10 @@ asn_crypto_create_keys (asn_crypto_public_keys_t * public, asn_crypto_private_ke
   ASSERT (asn_crypto_is_valid_self_signed_key (&ssk, public));
 }
 
-typedef union {
-  /* Header index 0; data index 1. */
-  u8 * sections[ASN_PDU_N_SECTION_TYPE];
-} asn_pdu_t;
-
-always_inline void *
-asn_pdu_add_to_section (asn_pdu_t * p, uword n_bytes, asn_pdu_section_type_t st)
-{
-  void * result;
-
-  ASSERT (st < ASN_PDU_N_SECTION_TYPE);
-
-  uword n_reserved = vec_len (p->sections[st]) ? 0 : crypto_box_reserved_pad_bytes;
-
-  /* Add extra 32 bytes at start of header or data. */
-  n_bytes += n_reserved;
-
-  vec_add2 (p->sections[st], result, n_bytes);
-
-  return result + n_reserved;
-}
-
-always_inline void *
-asn_pdu_add_header (asn_pdu_t * p, uword n_bytes)
-{ return asn_pdu_add_to_section (p, n_bytes, ASN_PDU_SECTION_TYPE_HEADER); }
-
-always_inline void *
-asn_pdu_add_data (asn_pdu_t * p, uword n_bytes)
-{ return asn_pdu_add_to_section (p, n_bytes, ASN_PDU_SECTION_TYPE_DATA); }
-
-always_inline void *
-asn_pdu_get_section (asn_pdu_t * p, asn_pdu_section_type_t st)
-{
-  if (vec_len (p->sections[st]) == 0)
-    return 0;
-  return p->sections[st] + crypto_box_reserved_pad_bytes;
-}
-
-always_inline u32
-asn_pdu_get_section_n_bytes (asn_pdu_t * p, asn_pdu_section_type_t st)
-{
-  if (vec_len (p->sections[st]) == 0)
-    return 0;
-  else
-    {
-      ASSERT (vec_len (p->sections[st]) >= crypto_box_reserved_pad_bytes);
-      return vec_len (p->sections[st]) - crypto_box_reserved_pad_bytes;
-    }
-}
-
-always_inline void *
-asn_pdu_get_header (asn_pdu_t * p)
-{ return asn_pdu_get_section (p, ASN_PDU_SECTION_TYPE_HEADER); }
-
-always_inline void *
-asn_pdu_get_data (asn_pdu_t * p)
-{ return asn_pdu_get_section (p, ASN_PDU_SECTION_TYPE_DATA); }
-
-always_inline u32
-asn_pdu_header_n_bytes (asn_pdu_t * p)
-{ return asn_pdu_get_section_n_bytes (p, ASN_PDU_SECTION_TYPE_HEADER); }
-
-always_inline u32
-asn_pdu_data_n_bytes (asn_pdu_t * p)
-{ return asn_pdu_get_section_n_bytes (p, ASN_PDU_SECTION_TYPE_DATA); }
-
-always_inline void
-asn_pdu_reset (asn_pdu_t * p)
-{
-  asn_pdu_section_type_t st;
-  foreach_asn_pdu_section_type (st)
-    vec_reset_length (p->sections[st]);
-}
-
-always_inline void
-asn_pdu_free (asn_pdu_t * p)
-{
-  asn_pdu_section_type_t st;
-  foreach_asn_pdu_section_type (st)
-    vec_free (p->sections[st]);
-}
-
 #define foreach_asn_session_state               \
-  _ (open)                                      \
-  _ (logged_in)                                 \
+  _ (opened)                                    \
+  _ (provisional)                               \
+  _ (established)                               \
   _ (suspended)                                 \
   _ (quiting)                                   \
   _ (close)
@@ -479,6 +264,43 @@ typedef enum {
 #undef _
   ASN_N_SESSION_STATE,
 } asn_session_state_t;
+
+typedef struct {
+  /* Previous segments in PDU -- must be full segments of 4094 bytes. */
+  asn_pdu_full_segment_t * segments;
+
+  u8 * overflow_buffer;
+} asn_pdu_t;
+
+always_inline void
+asn_pdu_free (asn_pdu_t * p) 
+{
+  vec_free (p->segments);
+  vec_free (p->overflow_buffer);
+}
+
+#if 0
+always_inline void
+asn_pdu_segmentize_overflow (asn_pdu_t * p)
+{
+  u32 n_left = vec_len (p->overflow_segment);
+  u8 * o = p->overflow_segment;
+  while (n_left > 0)
+    {
+      asn_pdu_full_segment_t * fs;
+      u32 n_this_segment;
+
+      vec_add2 (p->segments, fs, 1);
+
+      n_this_segment = n_left > sizeof (fs->data) ? sizeof (fs->data) : n_left;
+      fs->n_bytes_in_segment_and_more_flag = 
+        clib_host_to_net_u16 (((n_left > sizeof (fs->data)) << ASN_PDU_SEGMENT_HEADER_LOG2_MORE_FLAG)
+                              | n_this_segment);
+      memcpy (fs->data, o, n_this_segment);
+      o += n_this_segment;
+      n_left -= n_this_segment;
+    }
+}
 
 typedef struct {
   /* Index in asn socket pool. */
@@ -499,9 +321,6 @@ typedef struct {
 
   /* Currently received PDU we're working on. */
   asn_pdu_t rx_pdu;
-
-  /* Prologue for last received PDU. */
-  u32 rx_pdu_n_bytes_in_section[ASN_PDU_N_SECTION_TYPE];
 
   /* Hash table which has entries for all user indices logged in on this socket. */
   uword * users_logged_in_this_socket;
@@ -548,7 +367,7 @@ typedef struct asn_main_t {
 } asn_main_t;
 
 always_inline void *
-asn_socket_tx_add_helper (asn_socket_t * as, u32 n_bytes, asn_pdu_section_type_t st, uword want_new_pdu)
+asn_socket_tx_add_helper (asn_socket_t * as, u32 n_bytes, uword want_new_pdu)
 {
   asn_pdu_t * pdu;
   void * d;
@@ -1215,21 +1034,13 @@ static u8 * format_asn_message_request_pdu (u8 * s, va_list * va)
   { return s; }
 
 _ (raw)
-_ (file_read_and_lock_request)
-_ (file_read_no_lock_request)
-_ (file_remove_request)
-_ (file_write_request)
-_ (head_report)
+_ (exec)
 _ (mark_request)
 _ (mark_report)
 _ (session_pause_request)
 _ (session_quit_request)
 _ (session_redirect_request)
 _ (session_resume_request)
-_ (trace_request)
-_ (user_del_request)
-_ (user_search_request)
-_ (user_vouch_request)
 
 #undef _
 
@@ -1685,3 +1496,4 @@ int main (int argc, char * argv[])
 
   return ret;
 }
+#endif
