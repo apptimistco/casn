@@ -176,6 +176,7 @@ typedef struct {
   asn_app_location_t recent_check_in_locations[32];
   asn_app_position_on_earth_t position_on_earth;
   asn_app_message_union_t * messages_by_increasing_time;
+  uword * events_rsvpd_for_user;
 } asn_app_user_t;
 
 always_inline void asn_app_user_free (asn_app_user_t * u)
@@ -196,6 +197,7 @@ always_inline void asn_app_user_free (asn_app_user_t * u)
   asn_app_message_union_vector_free (&u->messages_by_increasing_time);
 
   hash_free (u->user_friends);
+  hash_free (u->events_rsvpd_for_user);
 }
 
 typedef struct {
@@ -240,7 +242,7 @@ typedef struct {
   asn_app_photo_t * photos;
 
   /* Hash of user indices that have RSVPd for this event. */
-  uword * rsvps;
+  uword * users_rsvpd_for_event;
   
   /* Comments about this event. */
   asn_app_message_union_t * messages_by_increasing_time;
@@ -255,7 +257,7 @@ always_inline void asn_app_event_free (asn_app_event_t * e)
       asn_app_photo_free (p);
     vec_free (e->photos);
   }
-  hash_free (e->rsvps);
+  hash_free (e->users_rsvpd_for_event);
   asn_app_message_union_vector_free (&e->messages_by_increasing_time);
 }
 
