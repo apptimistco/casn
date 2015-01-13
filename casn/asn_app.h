@@ -155,6 +155,9 @@ typedef struct {
 
   u8 ** oneof_values;
 
+  asn_app_attribute_type_t oneof_value_type_for_unserialize;
+  u32 * oneof_map_for_unserialize;
+
   union {
     u8 * as_u8;
     u16 * as_u16;
@@ -166,9 +169,16 @@ typedef struct {
   } values;
 } asn_app_attribute_t;
 
+always_inline uword
+asn_app_attribute_is_oneof (asn_app_attribute_t * a)
+{
+  return (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice
+          || a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice);
+}
+
 typedef struct {
   u32 index;
-  u32 is_private : 1;
+  u32 show_user_on_map : 1;
   u32 is_checked_in : 1;
   uword * user_friends;
   asn_app_photo_t * photos;
@@ -290,8 +300,11 @@ u32 asn_app_add_attribute (asn_app_attribute_main_t * am, asn_app_attribute_type
 u32 asn_app_add_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, char * fmt, ...);
 
 void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
-void asn_app_set_attribute (asn_app_attribute_t * a, u32 i, ...);
+void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, ...);
+
 void asn_app_set_oneof_attribute (asn_app_attribute_t * a, u32 i, char * fmt, ...);
+u8 * asn_app_get_oneof_attribute (asn_app_attribute_t * a, u32 i);
+uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_t * a, u32 i, uword * r);
 
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 

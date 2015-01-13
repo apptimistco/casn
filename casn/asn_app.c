@@ -1,5 +1,7 @@
 #include <casn/asn_app.h>
 
+static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * choice);
+
 static void
 serialize_asn_app_photo (serialize_main_t * m, va_list * va)
 {
@@ -72,6 +74,7 @@ always_inline void asn_app_attribute_free (asn_app_attribute_t * a)
   vec_foreach_index (i, a->oneof_values) vec_free (a->oneof_values[i]);
   vec_free (a->oneof_values);
   hash_free (a->oneof_index_by_value);
+  vec_free (a->oneof_map_for_unserialize);
   vec_free (a->name);
 }
 
@@ -123,61 +126,84 @@ unserialize_asn_app_attribute_value (serialize_main_t * m, va_list * va)
 {
   asn_app_attribute_t * a = va_arg (*va, asn_app_attribute_t *);
   u32 i = va_arg (*va, u32);
-  asn_app_attribute_type_t value_type = asn_app_attribute_value_type (a);
-  switch (value_type)
+  asn_app_attribute_type_t vta = asn_app_attribute_value_type (a);
+  asn_app_attribute_type_t vtu = vta;
+  if (asn_app_attribute_is_oneof (a))
+    vtu = a->oneof_value_type_for_unserialize;
+  union {
+    u8 as_u8;
+    u16 as_u16;
+    u32 as_u32;
+    u64 as_u64;
+    f64 as_f64;
+    u8 * as_string;
+    uword * as_bitmap;
+  } vu;
+  switch (vtu)
     {
     case ASN_APP_ATTRIBUTE_TYPE_u8:
-      vec_validate (a->values.as_u8, i);
-      unserialize_integer (m, &a->values.as_u8[i], sizeof (u8));
+      unserialize_integer (m, &vu.as_u8, sizeof (u8));
+      vu.as_u64 = vu.as_u8;
       break;
     case ASN_APP_ATTRIBUTE_TYPE_u16:
-      vec_validate (a->values.as_u16, i);
-      unserialize_integer (m, &a->values.as_u16[i], sizeof (u16));
+      unserialize_integer (m, &vu.as_u16, sizeof (u16));
+      vu.as_u64 = vu.as_u16;
       break;
     case ASN_APP_ATTRIBUTE_TYPE_u32:
-      vec_validate (a->values.as_u32, i);
-      unserialize_integer (m, &a->values.as_u32[i], sizeof (u32));
+      unserialize_integer (m, &vu.as_u32, sizeof (u32));
+      vu.as_u64 = vu.as_u32;
       break;
     case ASN_APP_ATTRIBUTE_TYPE_u64:
-      vec_validate (a->values.as_u64, i);
-      unserialize_integer (m, &a->values.as_u64[i], sizeof (u64));
+      unserialize_integer (m, &vu.as_u64, sizeof (u64));
       break;
     case ASN_APP_ATTRIBUTE_TYPE_f64:
-      vec_validate (a->values.as_f64, i);
-      unserialize (m, unserialize_f64, &a->values.as_f64[i]);
+      unserialize (m, unserialize_f64, &vu.as_f64);
       break;
     case ASN_APP_ATTRIBUTE_TYPE_string:
-      vec_validate (a->values.as_string, i);
-      vec_unserialize (m, &a->values.as_string[i], unserialize_vec_8);
+      vec_unserialize (m, &vu.as_string, unserialize_vec_8);
       break;
     case ASN_APP_ATTRIBUTE_TYPE_bitmap:
-      vec_validate (a->values.as_bitmap, i);
-      a->values.as_bitmap[i] = unserialize_bitmap (m);
+      vu.as_bitmap = unserialize_bitmap (m);
       break;
     default:
       ASSERT (0);
       break;
     }
-}
 
-static void
-serialize_asn_app_user (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
-  u32 n_user = va_arg (*va, u32);
-  u32 i;
-  for (i = 0; i < n_user; i++)
-    vec_serialize (m, u[i].photos, serialize_asn_app_photo);
-}
-
-static void
-unserialize_asn_app_user (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
-  u32 n_user = va_arg (*va, u32);
-  u32 i;
-  for (i = 0; i < n_user; i++)
-    vec_unserialize (m, &u[i].photos, unserialize_asn_app_photo);
+  switch (vta)
+    {
+    case ASN_APP_ATTRIBUTE_TYPE_u8:
+      vec_validate (a->values.as_u8, i);
+      a->values.as_u8[i] = vu.as_u64;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u16:
+      vec_validate (a->values.as_u16, i);
+      a->values.as_u16[i] = vu.as_u64;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u32:
+      vec_validate (a->values.as_u32, i);
+      a->values.as_u32[i] = vu.as_u64;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u64:
+      vec_validate (a->values.as_u64, i);
+      a->values.as_u64[i] = vu.as_u64;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_f64:
+      vec_validate (a->values.as_f64, i);
+      a->values.as_f64[i] = vu.as_f64;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_string:
+      vec_validate (a->values.as_string, i);
+      a->values.as_string[i] = vu.as_string;
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_bitmap:
+      vec_validate (a->values.as_bitmap, i);
+      a->values.as_bitmap[i] = vu.as_bitmap;
+      break;
+    default:
+      ASSERT (0);
+      break;
+    }
 }
 
 static void
@@ -187,7 +213,18 @@ serialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
   serialize_likely_small_unsigned_integer (m, vec_len (am->attributes));
   asn_app_attribute_t * a;
   vec_foreach (a, am->attributes)
-    vec_serialize (m, a->name, serialize_vec_8);
+    {
+      asn_app_attribute_type_t value_type = asn_app_attribute_value_type (a);
+      vec_serialize (m, a->name, serialize_vec_8);
+      if (asn_app_attribute_is_oneof (a))
+        {
+          uword i;
+          serialize_likely_small_unsigned_integer (m, value_type);
+          serialize_likely_small_unsigned_integer (m, vec_len (a->oneof_values));
+          for (i = 0; i < vec_len (a->oneof_values); i++)
+            vec_serialize (m, a->oneof_values[i], serialize_vec_8);
+        }
+    }
 }
 
 static void
@@ -208,6 +245,24 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
       vec_free (name);
       a = vec_elt_at_index (am->attributes, *p);
       am->attribute_map_for_unserialize[i] = a->index;
+      if (asn_app_attribute_is_oneof (a))
+        {
+          uword n_oneof_values, i;
+          a->oneof_value_type_for_unserialize = unserialize_likely_small_unsigned_integer (m);
+          n_oneof_values = unserialize_likely_small_unsigned_integer (m);
+          for (i = 0; i < n_oneof_values; i++)
+            {
+              u32 oi;
+              vec_unserialize (m, &name, unserialize_vec_8);
+              p = hash_get_mem (a->oneof_index_by_value, name);
+              if (! p)
+                oi = asn_app_add_oneof_attribute_helper (a, name);
+              else
+                oi = p[0];
+              a->oneof_map_for_unserialize[i] = oi;
+              vec_free (name);
+            }
+        }
     }
 }
 
@@ -233,6 +288,26 @@ unserialize_asn_app_attribute_with_index (serialize_main_t * m, va_list * va)
       a = vec_elt_at_index (am->attributes, am->attribute_map_for_unserialize[i]);
       unserialize (m, unserialize_asn_app_attribute_value, a, vi);
     }
+}
+
+static void
+serialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  u32 n_user = va_arg (*va, u32);
+  u32 i;
+  for (i = 0; i < n_user; i++)
+    vec_serialize (m, u[i].photos, serialize_asn_app_photo);
+}
+
+static void
+unserialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  u32 n_user = va_arg (*va, u32);
+  u32 i;
+  for (i = 0; i < n_user; i++)
+    vec_unserialize (m, &u[i].photos, unserialize_asn_app_photo);
 }
 
 static char * asn_app_main_serialize_magic = "asn_app_main v0";
@@ -346,11 +421,13 @@ void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
     }
 }
 
-void asn_app_set_attribute (asn_app_attribute_t * a, u32 i, ...)
+void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i, ...)
 {
+  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
   va_list va;
   va_start (va, i);
   asn_app_attribute_type_t value_type = asn_app_attribute_value_type (a);
+
   switch (value_type)
     {
     case ASN_APP_ATTRIBUTE_TYPE_u8:
@@ -535,6 +612,61 @@ void asn_app_set_oneof_attribute (asn_app_attribute_t * a, u32 i, char * fmt, ..
           break;
         }
     }
+}
+
+u8 * asn_app_get_oneof_attribute (asn_app_attribute_t * a, u32 i)
+{
+  ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice);
+  asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
+  switch (vt)
+    {
+    case ASN_APP_ATTRIBUTE_TYPE_u8:
+      return vec_elt (a->oneof_values, a->values.as_u8[i]);
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u16:
+      return vec_elt (a->oneof_values, a->values.as_u16[i]);
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u32:
+      return vec_elt (a->oneof_values, a->values.as_u32[i]);
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u64:
+      return vec_elt (a->oneof_values, a->values.as_u64[i]);
+      break;
+    default:
+      ASSERT (0);
+      break;
+    }
+    return 0;
+}
+
+uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_t * a, u32 i, uword * r)
+{
+  ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice);
+  asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
+  clib_bitmap_zero (r);
+  vec_validate (r, 0);
+  switch (vt)
+    {
+    case ASN_APP_ATTRIBUTE_TYPE_u8:
+      r[0] = a->values.as_u8[i];
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u16:
+      r[0] = a->values.as_u16[i];
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u32:
+      r[0] = a->values.as_u32[i];
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_u64:
+      r[0] = a->values.as_u64[i];
+      break;
+    case ASN_APP_ATTRIBUTE_TYPE_bitmap:
+      r = clib_bitmap_or (r, a->values.as_bitmap[i]);
+      break;
+    default:
+      ASSERT (0);
+      break;
+    }
+  return r;
 }
 
 static void asn_app_attribute_main_free (asn_app_attribute_main_t * am)
