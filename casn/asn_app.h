@@ -178,6 +178,7 @@ asn_app_attribute_is_oneof (asn_app_attribute_t * a)
 
 typedef struct {
   u32 index;
+  u8 * id;
   u32 show_user_on_map : 1;
   u32 is_checked_in : 1;
   uword * user_friends;
@@ -188,6 +189,15 @@ typedef struct {
   asn_app_message_union_t * messages_by_increasing_time;
   uword * events_rsvpd_for_user;
 } asn_app_user_t;
+
+always_inline asn_app_location_t *
+asn_app_check_in_location_for_user (asn_app_user_t * au)
+{
+  return (au->is_checked_in
+          ? (au->recent_check_in_locations
+             + ((au->recent_check_in_location_index - 1) % ARRAY_LEN (au->recent_check_in_locations)))
+          : 0);
+}
 
 always_inline void asn_app_user_free (asn_app_user_t * u)
 {
@@ -206,6 +216,7 @@ always_inline void asn_app_user_free (asn_app_user_t * u)
 
   asn_app_message_union_vector_free (&u->messages_by_increasing_time);
 
+  vec_free (u->id);
   hash_free (u->user_friends);
   hash_free (u->events_rsvpd_for_user);
 }
@@ -302,9 +313,9 @@ u32 asn_app_add_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, char * f
 void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
 void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, ...);
 
-void asn_app_set_oneof_attribute (asn_app_attribute_t * a, u32 i, char * fmt, ...);
-u8 * asn_app_get_oneof_attribute (asn_app_attribute_t * a, u32 i);
-uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_t * a, u32 i, uword * r);
+void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, char * fmt, ...);
+u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
+uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 

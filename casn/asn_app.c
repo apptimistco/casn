@@ -258,9 +258,12 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
               if (! p)
                 oi = asn_app_add_oneof_attribute_helper (a, name);
               else
-                oi = p[0];
+                {
+                  oi = p[0];
+                  vec_free (name);
+                }
+              vec_validate (a->oneof_map_for_unserialize, i);
               a->oneof_map_for_unserialize[i] = oi;
-              vec_free (name);
             }
         }
     }
@@ -503,8 +506,11 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       }
   }
 
-  uword vi = vec_len (pa->oneof_values);
   uword is_single = pa->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice;
+  uword vi;
+  if (is_single && vec_len (pa->oneof_values) == 0)
+    vec_add1 (pa->oneof_values, 0);
+  vi = vec_len (pa->oneof_values);
 
   hash_set_mem (pa->oneof_index_by_value, choice, vi);
   vec_add1 (pa->oneof_values, choice);
@@ -529,7 +535,7 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       vec_free (pa->values.as_u16);
       pa->values.as_u32 = v32;
     }
-  else if ((is_single && vi == ((u64) 1 << (u64) BITS (u32))) || (! is_single && vi == BITS (u32)))
+  else if (! is_single && vi == BITS (u32))
     {
       u32 i;
       u64 * v64;
@@ -540,7 +546,7 @@ static u32 asn_app_add_oneof_attribute_helper (asn_app_attribute_t * pa, u8 * ch
       pa->values.as_u64 = v64;
     }
 
-  else if (! is_single && vi == BITS (u32))
+  else if (! is_single && vi == BITS (u64))
     {
       u32 i;
       uword ** as_bitmap;
@@ -567,21 +573,34 @@ u32 asn_app_add_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, char * f
   return asn_app_add_oneof_attribute_helper (pa, choice);
 }
 
-void asn_app_set_oneof_attribute (asn_app_attribute_t * a, u32 i, char * fmt, ...)
+void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i, char * fmt, ...)
 {
+  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
+  uword is_single, vi;
   va_list va;
   u8 * choice;
-  u32 vi;
 
-  va_start (va, fmt);
-  choice = va_format (0, fmt, &va);
-  va_end (va);
+  ASSERT (asn_app_attribute_is_oneof (a));
+  is_single = a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice;
+
+  if (! fmt && is_single)
+    {
+      vi = 0;
+      choice = 0;
+    }
+  else
+    {
+      va_start (va, fmt);
+      choice = va_format (0, fmt, &va);
+      va_end (va);
   
-  /* Choice freed if non-needed. */
-  vi = asn_app_add_oneof_attribute_helper (a, choice);
+      /* Choice freed if non-needed. */
+      vi = asn_app_add_oneof_attribute_helper (a, choice);
+    }
 
-  if (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice)
-    asn_app_set_attribute (a, i, vi);
+  if (is_single)
+    asn_app_set_attribute (am, ai, i, vi);
+
   else if (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice)
     {
       asn_app_attribute_type_t value_type = asn_app_attribute_value_type (a);
@@ -614,8 +633,9 @@ void asn_app_set_oneof_attribute (asn_app_attribute_t * a, u32 i, char * fmt, ..
     }
 }
 
-u8 * asn_app_get_oneof_attribute (asn_app_attribute_t * a, u32 i)
+u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
 {
+  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
   ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice);
   asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
   switch (vt)
@@ -639,8 +659,9 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_t * a, u32 i)
     return 0;
 }
 
-uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_t * a, u32 i, uword * r)
+uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 i, uword * r)
 {
+  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
   ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice);
   asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
   clib_bitmap_zero (r);
