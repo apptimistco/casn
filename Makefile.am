@@ -6,3 +6,8 @@ lib_LIBRARIES = libcasn.a
 
 libcasn_a_SOURCES = casn/asn_app.c
 nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
+
+bin_PROGRAMS = asn
+
+asn_SOURCES = asn.c tweetnacl.c
+asn_LDADD = -luclib

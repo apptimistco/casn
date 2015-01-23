@@ -2,7 +2,7 @@
 #define included_tweetnacl_h
 
 void crypto_random_bytes(u8 *,u64);
-int crypto_box_keypair (u8 * public, u8 * private);
+int crypto_box_keypair (u8 * public, u8 * private, int want_random);
 
 #define crypto_box_shared_secret_bytes 32
 int crypto_box_beforenm (u8 * shared_secret, const u8 * peer_public, const u8 * self_private);
@@ -33,7 +33,7 @@ int crypto_box_open_afternm (u8 * clear_text,
 #define crypto_sign_private_key_bytes 64
 #define crypto_sign_signature_bytes 64
 
-int crypto_sign_keypair (u8 * public, u8 * private);
+int crypto_sign_keypair (u8 * public, u8 * private, int want_random);
 
 int crypto_sign (u8 * signed_message, u64 * n_signed_message_bytes,
                  const u8 * message, u64 n_message_bytes,

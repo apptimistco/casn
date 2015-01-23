@@ -432,9 +432,9 @@ int crypto_scalarmult_base(u8 *q,const u8 *n)
   return crypto_scalarmult(q,n,_9);
 }
 
-int crypto_box_keypair(u8 *y,u8 *x)
+int crypto_box_keypair(u8 *y,u8 *x,int want_random)
 {
-  crypto_random_bytes(x,32);
+  if (want_random) crypto_random_bytes(x,32);
   return crypto_scalarmult_base(y,x);
 }
 
@@ -660,13 +660,13 @@ sv scalarbase(gf p[4],const u8 *s)
   scalarmult(p,q,s);
 }
 
-int crypto_sign_keypair(u8 *pk, u8 *sk)
+int crypto_sign_keypair(u8 *pk, u8 *sk,int want_random)
 {
   u8 d[64];
   gf p[4];
   int i;
 
-  crypto_random_bytes(sk, 32);
+  if (want_random) crypto_random_bytes(sk, 32);
   crypto_hash(d, sk, 32);
   d[0] &= 248;
   d[31] &= 127;
