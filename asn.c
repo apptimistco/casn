@@ -284,7 +284,6 @@ asn_crypto_create_keys (asn_crypto_public_keys_t * public, asn_crypto_private_ke
 }
 
 #define foreach_asn_session_state               \
-  _ (not_yet_opened)				\
   _ (opened)					\
   _ (provisional)                               \
   _ (established)                               \
@@ -517,6 +516,21 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
   return error;
 }
 
+clib_error_t * asn_exec (asn_socket_t * as, char * fmt, ...)
+{
+  va_list va;
+  u8 * s;
+
+  va_start (va, fmt);
+  s = va_format (0, fmt, &va);
+  va_end (va);
+
+  asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
+  memcpy (h->data, s, vec_len (s));
+  vec_free (s);
+  return asn_socket_tx (as);
+}
+
 static u8 * format_asn_session_state (u8 * s, va_list * va)
 {
   asn_session_state_t x = va_arg (*va, asn_session_state_t);
@@ -584,7 +598,7 @@ static void asn_socket_crypto_set_peer (asn_socket_t * as, u8 * peer_public_key,
 }
 
 static clib_error_t *
-asn_socket_rx_ack_pdu (websocket_main_t * wsm,
+asn_socket_rx_ack_pdu (asn_main_t * am,
                        asn_socket_t * as,
                        asn_pdu_ack_t * ack,
 		       uword n_bytes_in_pdu)
@@ -597,8 +611,18 @@ asn_socket_rx_ack_pdu (websocket_main_t * wsm,
     case ASN_PDU_login:
     case ASN_PDU_resume: {
       if (! is_error && acked_pdu_id == ASN_PDU_login)
-	as->session_state = ASN_SESSION_STATE_provisional;
+	as->session_state = ASN_SESSION_STATE_established;
       asn_socket_crypto_set_peer (as, ack->data + 0, ack->data + crypto_box_public_key_bytes);
+
+      {
+	asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, 0);
+	clib_error_t * error;
+	error = asn_exec (as, "auth%c%U", 0, format_hex_bytes, au->crypto_keys.public.auth_key,
+			  sizeof (au->crypto_keys.public.auth_key));
+	if (error)
+	  clib_error_report (error);
+      }
+
       break;
     }
 
@@ -761,7 +785,7 @@ asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 
 #define _(f)                                                            \
   static clib_error_t *                                                 \
-    asn_socket_rx_##f##_pdu (websocket_main_t * wsm, asn_socket_t * as, asn_pdu_header_t * h, u32 n_bytes_in_pdu) \
+    asn_socket_rx_##f##_pdu (asn_main_t * am, asn_socket_t * as, asn_pdu_header_t * h, u32 n_bytes_in_pdu) \
   { ASSERT (0); return 0; }                                             \
   static u8 * format_asn_##f##_pdu (u8 * s, va_list * va)               \
   { return s; }
@@ -807,9 +831,9 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
   
   is_server = websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_server_client;
 
-  if (is_server && as->session_state == ASN_SESSION_STATE_not_yet_opened)
+  if (is_server && as->session_state == ASN_SESSION_STATE_opened)
     {
-      as->session_state = ASN_SESSION_STATE_opened;
+      as->session_state = ASN_SESSION_STATE_established;
       if (n_payload_bytes != sizeof (as->ephemeral_keys.public))
 	{
 	  error = clib_error_return (0, "expected public key %d bytes received %d bytes",
@@ -819,6 +843,8 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
 
       memcpy (as->ephemeral_crypto_state.nonce, am->server_nonce, sizeof (am->server_nonce));
       crypto_box_beforenm (as->ephemeral_crypto_state.shared_secret, rx_payload, am->server_keys.private.encrypt_key);
+
+      /* FIXME ack with our ephemeral key and new nonce. */
 
       if (am->verbose)
 	clib_warning ("handshake received; ephemeral received %U",
@@ -883,7 +909,7 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
     {
 #define _(f,n)								\
   case ASN_PDU_##f:							\
-    error = asn_socket_rx_##f##_pdu (wsm, as, (void *) h, vec_len (as->rx_pdu)); \
+    error = asn_socket_rx_##f##_pdu (am, as, (void *) h, vec_len (as->rx_pdu)); \
     if (error) goto done;						\
     break;
 
@@ -911,7 +937,7 @@ static void asn_main_new_client_for_server (websocket_main_t * wsm, websocket_so
 {
   // asn_main_t * am = CONTAINER_OF (wsm, asn_main_t, websocket_main);
   asn_socket_t * as = CONTAINER_OF (ws, asn_socket_t, websocket_socket);
-  as->session_state = ASN_SESSION_STATE_not_yet_opened;
+  as->session_state = ASN_SESSION_STATE_opened;
 }
 
 static clib_error_t *
@@ -1190,15 +1216,11 @@ int test_asn_main (unformat_input_t * input)
 		  default:
 		    break;
 
-		  case ASN_SESSION_STATE_provisional:
-		    {
-		      u8 * s = format (0, "echo%cfoo", 0);
-		      asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
-		      memcpy (h->data, s, vec_len (s));
-		      vec_free (s);
-		      asn_socket_tx (as);
-		      break;
-		    }
+		  case ASN_SESSION_STATE_established:
+		    error = asn_exec (as, "echo%cfoo", 0);
+		    if (error)
+		      clib_error_report (error);
+		    break;
 		  }
 	      }
           }
