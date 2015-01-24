@@ -617,8 +617,16 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
       {
 	asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, 0);
 	clib_error_t * error;
-	error = asn_exec (as, "auth%c%U", 0, format_hex_bytes, au->crypto_keys.public.auth_key,
+	error = asn_exec (as, "auth%c%U", 0,
+			  format_hex_bytes, au->crypto_keys.public.auth_key,
 			  sizeof (au->crypto_keys.public.auth_key));
+	if (error)
+	  clib_error_report (error);
+      }
+
+      {
+	clib_error_t * error;
+	error = asn_exec (as, "newuser%c-b", 0);
 	if (error)
 	  clib_error_report (error);
       }
