@@ -1,5 +1,5 @@
 #include <uclib/uclib.h>
-#include "tweetnacl.h"
+#include <casn/tweetnacl.h>
 
 #define FOR(i,n) for (i = 0;i < n;++i)
 #define sv static void

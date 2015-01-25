@@ -2,8 +2,7 @@
 #define included_asn_h
 
 #include <uclib/uclib.h>
-
-#include "tweetnacl.h"
+#include <casn/tweetnacl.h>
 
 typedef struct {
   u8 auth_key[crypto_sign_private_key_bytes];

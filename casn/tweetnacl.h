@@ -1,5 +1,5 @@
-#ifndef included_tweetnacl_h
-#define included_tweetnacl_h
+#ifndef included_casn_tweetnacl_h
+#define included_casn_tweetnacl_h
 
 void crypto_random_bytes(u8 *,u64);
 int crypto_box_keypair (u8 * public, u8 * private, int want_random);
@@ -43,4 +43,4 @@ int crypto_sign_open (u8 * message, u64 * n_message_bytes,
                       u64 n_signed_message_bytes,
                       const u8 * public_key);
 
-#endif /* included_tweetnacl_h */
+#endif /* included_casn_tweetnacl_h */
