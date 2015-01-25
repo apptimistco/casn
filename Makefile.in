@@ -131,12 +131,12 @@ am__v_AR_1 =
 libcasn_a_AR = $(AR) $(ARFLAGS)
 libcasn_a_LIBADD =
 am__dirstamp = $(am__leading_dot)dirstamp
-am_libcasn_a_OBJECTS = casn/asn_app.$(OBJEXT)
+am_libcasn_a_OBJECTS = casn/asn_app.$(OBJEXT) casn/asn.$(OBJEXT)
 libcasn_a_OBJECTS = $(am_libcasn_a_OBJECTS)
 PROGRAMS = $(bin_PROGRAMS)
 am_asn_OBJECTS = asn.$(OBJEXT) tweetnacl.$(OBJEXT)
 asn_OBJECTS = $(am_asn_OBJECTS)
-asn_DEPENDENCIES =
+asn_DEPENDENCIES = libcasn.a
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -299,10 +299,10 @@ top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 AM_CFLAGS = -Wall
 lib_LIBRARIES = libcasn.a
-libcasn_a_SOURCES = casn/asn_app.c
+libcasn_a_SOURCES = casn/asn_app.c casn/asn.c
 nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
 asn_SOURCES = asn.c tweetnacl.c
-asn_LDADD = -luclib
+asn_LDADD = libcasn.a -luclib
 all: all-am
 
 .SUFFIXES:
@@ -380,6 +380,8 @@ casn/$(DEPDIR)/$(am__dirstamp):
 	@: > casn/$(DEPDIR)/$(am__dirstamp)
 casn/asn_app.$(OBJEXT): casn/$(am__dirstamp) \
 	casn/$(DEPDIR)/$(am__dirstamp)
+casn/asn.$(OBJEXT): casn/$(am__dirstamp) \
+	casn/$(DEPDIR)/$(am__dirstamp)
 
 libcasn.a: $(libcasn_a_OBJECTS) $(libcasn_a_DEPENDENCIES) $(EXTRA_libcasn_a_DEPENDENCIES) 
 	$(AM_V_at)-rm -f libcasn.a
@@ -441,6 +443,7 @@ distclean-compile:
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/asn.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tweetnacl.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/asn.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/asn_app.Po@am__quote@
 
 .c.o:
