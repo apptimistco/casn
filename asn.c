@@ -92,7 +92,9 @@ typedef CLIB_PACKED (struct {
 
     struct {
       asn_pdu_id_t id : 8;
-      u8 unused[7];
+      u8 unused[3];
+
+      u32 ack_handler_index;
     } casn_request_id;
 
     u8 blob_magic[8];           /* "asnmagic\0" for blobs. */
@@ -147,12 +149,15 @@ typedef CLIB_PACKED (struct {
   /* Random data to make SHA sum of blob unique. */
   u8 random[32];
 
+  /* Owner or destination of message. */
   u8 owner[32];
+
+  /* Author or sender of message. */
   u8 author[32];
 
   u64 time_stamp_in_nsec_from_1970;
 
-  /* Name length and data follows. */
+  /* Name length and contents follow (zero length name for "messages"). */
   u8 n_name_bytes;
   u8 name[0];
 
@@ -317,7 +322,12 @@ asn_pdu_free (asn_pdu_t * p)
   vec_free (p->overflow_data);
 }
 
-typedef struct {
+struct asn_main_t;
+struct asn_socket_t;
+
+typedef clib_error_t * (asn_ack_handler_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data);
+
+typedef struct asn_socket_t {
   websocket_socket_t websocket_socket;
 
   /* PDUs to be combined into a single websocket data frame. */
@@ -335,6 +345,8 @@ typedef struct {
 
   /* Nonce and shared secret. */
   asn_crypto_state_t ephemeral_crypto_state;
+
+  asn_ack_handler_t ** ack_handler_pool;
 } asn_socket_t;
 
 always_inline void
@@ -369,7 +381,11 @@ typedef struct asn_main_t {
 
   u32 verbose;
 
+  /* Index of self user (normally 0). */
+  u32 self_user_index;
+
   asn_known_users_t known_users[ASN_N_RX_TX];
+
 } asn_main_t;
 
 static void
@@ -516,7 +532,8 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
   return error;
 }
 
-clib_error_t * asn_exec (asn_socket_t * as, char * fmt, ...)
+clib_error_t * asn_exec (asn_socket_t * as, asn_ack_handler_t * ack_handler,
+			 char * fmt, ...)
 {
   va_list va;
   u8 * s;
@@ -528,7 +545,73 @@ clib_error_t * asn_exec (asn_socket_t * as, char * fmt, ...)
   asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
   memcpy (h->data, s, vec_len (s));
   vec_free (s);
+
+  {
+    asn_ack_handler_t ** ah;
+    pool_get (as->ack_handler_pool, ah);
+    ah[0] = ack_handler;
+    h->casn_request_id.ack_handler_index = ah - as->ack_handler_pool;
+  }
+
   return asn_socket_tx (as);
+}
+
+static clib_error_t * asn_socket_exec_newuser_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+#if 0
+  struct {
+    u8 public_encrypt[crypto_box_public_key_bytes];
+    u8 public_auth[crypto_sign_public_key_bytes];
+    u8 private_encrypt[crypto_box_private_key_bytes];
+    u8 private_auth[32];
+  } * keys = (void *) ack->data;
+#endif
+  ASSERT (0);
+  return 0;
+}
+
+static clib_error_t * asn_socket_exec_blob_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  if (n_bytes_ack_data > 0)
+    clib_warning ("%*s", n_bytes_ack_data, ack->data);
+  else
+    clib_warning ("empty");
+  return 0;
+}
+
+static clib_error_t * asn_socket_exec_echo_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  if (n_bytes_ack_data > 1)
+    clib_warning ("%*s", n_bytes_ack_data - (ack->data[n_bytes_ack_data - 1] == '\n'), ack->data);
+  return 0;
+}
+
+static u8 * format_asn_user_type (u8 * s, va_list * va)
+{
+  asn_user_type_t x = va_arg (*va, asn_user_type_t);
+  char * t;
+  switch (x)
+    {
+#define _(f) case ASN_USER_TYPE_##f: t = #f; break;
+      foreach_asn_user_type
+#undef _
+
+    default:
+      return format (s, "unknown 0x%x", x);
+    }
+
+  vec_add (s, t, strlen (t));
+
+  return s;
+}
+
+u8 * format_asn_user (u8 * s, va_list * va)
+{
+  asn_user_t * au = va_arg (*va, asn_user_t *);
+  
+  s = format (s, "type: %U", format_asn_user_type, au->user_type);
+
+  return s;
 }
 
 static u8 * format_asn_session_state (u8 * s, va_list * va)
@@ -559,25 +642,6 @@ u8 * format_asn_socket (u8 * s, va_list * va)
   return s;
 }
 
-static u8 * format_asn_user_type (u8 * s, va_list * va)
-{
-  asn_user_type_t x = va_arg (*va, asn_user_type_t);
-  char * t;
-  switch (x)
-    {
-#define _(f) case ASN_USER_TYPE_##f: t = #f; break;
-      foreach_asn_user_type
-#undef _
-
-    default:
-      return format (s, "unknown 0x%x", x);
-    }
-
-  vec_add (s, t, strlen (t));
-
-  return s;
-}
-
 #if 0
 static clib_error_t *
 asn_socket_tx_ack_pdu (asn_main_t * am, asn_socket_t * as, asn_ack_pdu_status_t status)
@@ -603,6 +667,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
                        asn_pdu_ack_t * ack,
 		       uword n_bytes_in_pdu)
 {
+  clib_error_t * error = 0;
   uword is_error = ack->status != ASN_ACK_PDU_STATUS_success;
   asn_pdu_id_t acked_pdu_id = ack->header.casn_request_id.id;
 
@@ -614,19 +679,34 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	as->session_state = ASN_SESSION_STATE_established;
       asn_socket_crypto_set_peer (as, ack->data + 0, ack->data + crypto_box_public_key_bytes);
 
-      {
+      if (0) {
 	asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, 0);
 	clib_error_t * error;
-	error = asn_exec (as, "auth%c%U", 0,
+	error = asn_exec (as, asn_socket_exec_echo_ack_handler, "auth%c%U", 0,
 			  format_hex_bytes, au->crypto_keys.public.auth_key,
 			  sizeof (au->crypto_keys.public.auth_key));
 	if (error)
 	  clib_error_report (error);
       }
 
-      {
+      if (0) {
 	clib_error_t * error;
-	error = asn_exec (as, "newuser%c-b", 0);
+	error = asn_exec (as, asn_socket_exec_newuser_ack_handler, "newuser%c-b", 0);
+	if (error)
+	  clib_error_report (error);
+      }
+
+      if (0) {
+	clib_error_t * error;
+	error = asn_exec (as, asn_socket_exec_echo_ack_handler, "blob%cfart%c-%c%ccontents of fart",
+			  0, 0, 0, 0);
+	if (error)
+	  clib_error_report (error);
+      }
+
+      if (0) {
+	clib_error_t * error;
+	error = asn_exec (as, asn_socket_exec_blob_ack_handler, "cat%cfart", 0);
 	if (error)
 	  clib_error_report (error);
       }
@@ -634,16 +714,28 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
       break;
     }
 
-    case ASN_PDU_exec:
-      clib_warning ("exec: %*s", n_bytes_in_pdu - sizeof (ack[0]), ack->data);
-      break;
+    case ASN_PDU_exec: {
+      u32 ai = ack->header.casn_request_id.ack_handler_index;
+      asn_ack_handler_t * ah;
+
+      if (pool_is_free_index (as->ack_handler_pool, ai))
+	{
+	  error = clib_error_return (0, "unknown ack handler with index 0x%x", ai);
+	  goto done;
+	}
+
+      ah = as->ack_handler_pool[ai];
+      pool_put_index (as->ack_handler_pool, ai);
+      return ah (am, as, ack, n_bytes_in_pdu - sizeof (ack[0]));
+    }
 
     default:
       ASSERT (0);
       break;
     }
 
-  return 0;
+ done:
+  return error;
 }
 
 static u8 * format_asn_ack_pdu_status (u8 * s, va_list * va)
@@ -716,7 +808,8 @@ static uword
 asn_main_new_user_with_type (asn_main_t * am,
                              asn_rx_or_tx_t rt,
                              asn_user_type_t with_user_type,
-                             asn_crypto_public_keys_t * with_public_keys)
+                             asn_crypto_public_keys_t * with_public_keys,
+			     asn_crypto_private_keys_t * with_private_keys)
 {
   asn_user_t * au;
   asn_known_users_t * ku = &am->known_users[rt];
@@ -729,25 +822,24 @@ asn_main_new_user_with_type (asn_main_t * am,
 
   if (with_public_keys)
     {
+      /* With public keys implies that private keys are invalid. */
       k->public = with_public_keys[0];
       memset (&k->private, ~0, sizeof (k->private));
       au->private_key_is_valid = 0;
     }
   else
     {
-      if (1) {
-	u8 tmp0[32] = {
-	  0x3d, 0x61, 0xea, 0xdf, 0xc7, 0xe2, 0x59, 0x0e, 0xbd, 0xf6, 0xcd, 0x12, 0x05, 0x4b, 0x91, 0x21, 0xe7, 0xaf, 0x0e, 0x86, 0x61, 0xd8, 0xe5, 0x7f, 0x42, 0x3a, 0xa8, 0x2b, 0x31, 0x80, 0x0f, 0xb5,
-	};
-	u8 tmp1[32] = {
-	  0x04, 0xa7, 0x31, 0x97, 0x20, 0x38, 0x00, 0xb6, 0x75, 0xb4, 0x1f, 0xc6, 0x22, 0x36, 0x01, 0xd3, 0xa3, 0x40, 0x48, 0x57, 0x9a, 0x93, 0xa7, 0xbe, 0xa7, 0x09, 0xef, 0xf5, 0xd7, 0x74, 0x09, 0x5f, 
-	};
-	memcpy (&k->private.encrypt_key, tmp0, sizeof (tmp0));
-	memcpy (&k->private.auth_key, tmp1, sizeof (tmp1));
-	asn_crypto_create_keys (&k->public, &k->private, /* want_random */ 0);
-      } else {
+      /* Private keys specified? */
+      if (with_private_keys)
+	{
+	  memcpy (&k->private.encrypt_key, with_private_keys->encrypt_key, sizeof (k->private.encrypt_key));
+	  memcpy (&k->private.auth_key, with_private_keys->auth_key, 32);
+	  asn_crypto_create_keys (&k->public, &k->private, /* want_random */ 0);
+	}
+      else
+	/* Random private keys. */
 	asn_crypto_create_keys (&k->public, &k->private, /* want_random */ 1);
-      }
+
       au->private_key_is_valid = 1;
     }
 
@@ -766,6 +858,7 @@ asn_main_new_user_with_type (asn_main_t * am,
   return au - ku->user_pool;
 }
 
+#if 0
 static asn_crypto_state_t *
 asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 {
@@ -790,6 +883,7 @@ asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 
   return cs;
 }
+#endif
 
 #define _(f)                                                            \
   static clib_error_t *                                                 \
@@ -825,6 +919,15 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
     }
 
   return s;
+}
+
+static clib_error_t * asn_socket_tx_login_for_user (asn_socket_t * as, asn_user_t * au)
+{
+  asn_pdu_login_t * l;
+  l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
+  memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
+  memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
+  return asn_socket_tx (as);
 }
 
 static clib_error_t *
@@ -913,6 +1016,13 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
     }
 
   asn_pdu_header_t * h = (void *) as->rx_pdu;
+
+  if (am->verbose)
+    clib_warning ("%U %s\n  %U",
+		  format_time_float, 0, unix_time_now (),
+		  ws->is_server_client ? "client -> server" : "server -> client",
+		  format_asn_pdu, h, vec_len (as->rx_pdu));
+
   switch (h->id)
     {
 #define _(f,n)								\
@@ -929,12 +1039,6 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
       error = clib_error_return (0, "unknown pdu id 0x%x", h->id);
       goto done;
     }
-
-  if (am->verbose)
-    clib_warning ("%U %s\n  %U",
-		  format_time_float, 0, unix_time_now (),
-		  ws->is_server_client ? "client -> server" : "server -> client",
-		  format_asn_pdu, h, vec_len (as->rx_pdu));
 
  done:
   vec_reset_length (as->rx_pdu);
@@ -977,17 +1081,13 @@ asn_main_did_receive_handshake (websocket_main_t * wsm, websocket_socket_t * ws)
       if (error)
 	goto done;
 
-      {
-	asn_user_t * au;
-	asn_pdu_login_t * l;
-	au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, 0);
-	l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
-	memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
-	memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
-	error = asn_socket_tx (as);
-	if (error)
-	  goto done;
-      }
+      if (! pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
+	{
+	  asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
+	  error = asn_socket_tx_login_for_user (as, au);
+	  if (error)
+	    goto done;
+	}
 
       if (am->verbose)
 	clib_warning ("handshake received; ephemeral sent %U", format_hex_bytes, ek->public, sizeof (ek->public));
@@ -1059,6 +1159,7 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
   if (! am->client_config)
     am->client_config = format (0, "%U%c", format_sockaddr, &ws->clib_socket.self_addr, 0);
 
+  ASSERT (want_random_keys);
   asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private, want_random_keys);
 
   return error;
@@ -1087,10 +1188,15 @@ typedef struct {
   asn_main_t asn_main;
   
   struct {
-    u8 * private_encrypt_key;
-    u8 * private_auth_key;
+    u8 * public_encrypt_key;
+    u8 * public_auth_key;
     u8 * nonce;
   } server_keys;
+
+  struct {
+    u8 * private_encrypt_key;
+    u8 * private_auth_key;
+  } user_keys;
 
   u32 n_clients;
 } test_asn_main_t;
@@ -1121,14 +1227,23 @@ int test_asn_main (unformat_input_t * input)
         {
           am->server_config = 0;
         }
+      else if (unformat (input, "user-keys %U %U",
+			 unformat_hex_string, &tm->user_keys.private_encrypt_key,
+			 unformat_hex_string, &tm->user_keys.private_auth_key))
+	{
+	  if (vec_len (tm->user_keys.private_encrypt_key) != 32)
+	    clib_error ("user encrypt not %d bytes", 32);
+	  if (vec_len (tm->user_keys.private_auth_key) != 32)
+	    clib_error ("user auth key not %d bytes", 32);
+	}
       else if (unformat (input, "server-keys %U %U %U",
-			 unformat_hex_string, &tm->server_keys.private_encrypt_key,
-			 unformat_hex_string, &tm->server_keys.private_auth_key,
+			 unformat_hex_string, &tm->server_keys.public_encrypt_key,
+			 unformat_hex_string, &tm->server_keys.public_auth_key,
 			 unformat_hex_string, &tm->server_keys.nonce))
 	{
-	  if (vec_len (tm->server_keys.private_encrypt_key) != sizeof (am->server_keys.private.encrypt_key))
-	    clib_error ("server encrypt not %d bytes", sizeof (am->server_keys.private.encrypt_key));
-	  if (vec_len (tm->server_keys.private_auth_key) != 32)
+	  if (vec_len (tm->server_keys.public_encrypt_key) != sizeof (am->server_keys.public.encrypt_key))
+	    clib_error ("server encrypt not %d bytes", sizeof (am->server_keys.public.encrypt_key));
+	  if (vec_len (tm->server_keys.public_auth_key) != 32)
 	    clib_error ("server auth key not %d bytes", 32);
 	  if (vec_len (tm->server_keys.nonce) != crypto_box_nonce_bytes)
 	    clib_error ("server nonce not %d bytes", crypto_box_nonce_bytes);
@@ -1150,41 +1265,46 @@ int test_asn_main (unformat_input_t * input)
     goto done;
 
   {
-    int want_random_keys = vec_len (tm->server_keys.private_encrypt_key) == 0;
+    int want_random_keys = vec_len (tm->server_keys.public_encrypt_key) == 0;
 
     if (! want_random_keys)
       {
-	asn_crypto_private_keys_t * pk = &am->server_keys.private;
-	memcpy (pk->encrypt_key, tm->server_keys.private_encrypt_key, sizeof (pk->encrypt_key));
-	/* other 32 bytes is public key generated by keypair function */
-	memcpy (pk->auth_key, tm->server_keys.private_auth_key, 32);
+	asn_crypto_public_keys_t * k = &am->server_keys.public;
+
+	memset (&am->server_keys.private, ~0, sizeof (am->server_keys.private));
+	memcpy (k->encrypt_key, tm->server_keys.public_encrypt_key, sizeof (k->encrypt_key));
+	memcpy (k->auth_key, tm->server_keys.public_auth_key, sizeof (k->auth_key));
 	memcpy (am->server_nonce, tm->server_keys.nonce, sizeof (am->server_nonce));
 
-	memset (tm->server_keys.private_encrypt_key, 0, vec_len (tm->server_keys.private_encrypt_key));
-	memset (tm->server_keys.private_auth_key, 0, vec_len (tm->server_keys.private_auth_key));
+	memset (tm->server_keys.public_encrypt_key, 0, vec_len (tm->server_keys.public_encrypt_key));
+	memset (tm->server_keys.public_auth_key, 0, vec_len (tm->server_keys.public_auth_key));
 	memset (tm->server_keys.nonce, 0, vec_len (tm->server_keys.nonce));
 
-	vec_free (tm->server_keys.private_encrypt_key);
-	vec_free (tm->server_keys.private_auth_key);
+	vec_free (tm->server_keys.public_encrypt_key);
+	vec_free (tm->server_keys.public_auth_key);
 	vec_free (tm->server_keys.nonce);
       }
 
     if (am->server_config)
       {
-	error = asn_add_listener (am, am->server_config, want_random_keys);
+	error = asn_add_listener (am, am->server_config, /* want_random_keys */ 1);
 	if (error)
 	  goto done;
       }
-
-    else if (! want_random_keys)
-      asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private, want_random_keys);
   }
+
+  am->self_user_index = ~0;
+  if (tm->user_keys.private_encrypt_key)
+    {
+      asn_crypto_private_keys_t pk;
+      memcpy (pk.encrypt_key, tm->user_keys.private_encrypt_key, vec_len (tm->user_keys.private_encrypt_key));
+      memcpy (pk.auth_key, tm->user_keys.private_auth_key, vec_len (tm->user_keys.private_auth_key));
+      am->self_user_index = asn_main_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
+    }
 
   {
     int i;
     f64 last_scan_time = unix_time_now ();
-
-    asn_main_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0);
 
     for (i = 0; i < tm->n_clients; i++)
       {
@@ -1225,7 +1345,7 @@ int test_asn_main (unformat_input_t * input)
 		    break;
 
 		  case ASN_SESSION_STATE_established:
-		    error = asn_exec (as, "echo%cfoo", 0);
+		    error = asn_exec (as, asn_socket_exec_echo_ack_handler, "echo%cfoo", 0);
 		    if (error)
 		      clib_error_report (error);
 		    break;
