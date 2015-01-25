@@ -22,40 +22,6 @@ typedef struct {
   u32 n_clients;
 } test_asn_main_t;
 
-static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_main_t * am, asn_socket_t * as,
-									 asn_pdu_ack_t * ack, u32 n_bytes_ack_data,
-									 asn_user_type_t user_type)
-{
-  struct {
-    u8 private_encrypt_key[crypto_box_private_key_bytes];
-    u8 private_auth_key[crypto_sign_private_key_bytes];
-  } * keys = (void *) ack->data;
-  u32 ui;
-  asn_crypto_private_keys_t pk;
-
-  if (am->verbose)
-    clib_warning ("newuser %U", format_asn_user_type, user_type);
-
-  memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
-  memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
-
-  ui = asn_main_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
-
-  if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-    am->self_user_index = ui;
-
-  return 0;
-}
-
-#define _(f)								\
-  clib_error_t * asn_socket_exec_newuser_ack_handler_for_##f##_user (asn_main_t * am, asn_socket_t * as, \
-								     asn_pdu_ack_t * ack, u32 n_bytes_ack_data) \
-  { return asn_socket_exec_newuser_ack_handler_for_user_type (am, as, ack, n_bytes_ack_data, ASN_USER_TYPE_##f);  }
-
-foreach_asn_user_type
-
-#undef _
-
 static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   if (n_bytes_ack_data > 0)
@@ -217,22 +183,9 @@ int test_asn_main (unformat_input_t * input)
 		switch (as->session_state)
 		  {
 		  case ASN_SESSION_STATE_opened:
-		    if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-		      {
-			error = asn_exec (as, asn_socket_exec_newuser_ack_handler_for_actual_user, "newuser%c-b", 0);
-			if (error)
-			  clib_error_report (error);
-		      }
-		    else
-		      {
-			asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
-			error = asn_socket_login_for_user (as, au);
-			if (error)
-			  goto done;
-		      }
-		    break;
-
-		  default:
+		    error = asn_login_for_self_user (am, as);
+		    if (error)
+		      clib_error_report (error);
 		    break;
 
 		  case ASN_SESSION_STATE_established:
@@ -255,6 +208,9 @@ int test_asn_main (unformat_input_t * input)
 			clib_error_report (error);
 		    }
 
+		    break;
+
+		  default:
 		    break;
 		  }
 	      }

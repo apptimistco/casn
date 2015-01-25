@@ -318,7 +318,7 @@ clib_error_t * asn_exec (asn_socket_t * as,
 			 asn_ack_handler_t * ack_handler,
 			 char * fmt, ...);
 
-clib_error_t * asn_socket_login_for_user (asn_socket_t * as, asn_user_t * au);
+clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
 
 format_function_t format_asn_user_type;
 
