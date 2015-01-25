@@ -204,90 +204,6 @@ typedef struct {
   };
 } asn_user_t;
 
-#endif /* included_asn_h */
-
-u8 * format_asn_pdu_id (u8 * s, va_list * va)
-{
-  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
-  char * t;
-  switch (id)
-    {
-#define _(f,n) case ASN_PDU_##f: t = #f; break;
-      foreach_asn_pdu_id
-#undef _
-
-    default:
-      return format (s, "unknown 0x%x", id);
-    }
-
-  vec_add (s, t, strlen (t));
-
-  return s;
-}
-
-always_inline void
-asn_crypto_increment_nonce (asn_crypto_state_t * s, asn_rx_or_tx_t rt, u32 increment)
-{
-  u32 u = increment;
-  i32 i;
-  for (i = ARRAY_LEN (s->nonce[rt]) - 1; i >= 0; i--)
-    {
-      u += s->nonce[rt][i];
-      s->nonce[rt][i] = u;
-      u >>= BITS (s->nonce[rt][i]);
-    }
-}
-
-static void asn_crypto_set_nonce (asn_crypto_state_t * cs, u8 * self_public_key, u8 * peer_public_key,
-				  u8 * nonce)
-{
-  int cmp = memcmp (self_public_key, peer_public_key, STRUCT_SIZE_OF (asn_crypto_ephemeral_keys_t, public));
-  int l = sizeof (cs->nonce[ASN_RX]);
-  memcpy (cs->nonce[ASN_RX], nonce, l);
-  memcpy (cs->nonce[ASN_TX], nonce, l);
-  cs->nonce[ASN_TX][l - 2] = 0;
-  cs->nonce[ASN_RX][l - 2] = 0;
-  cs->nonce[ASN_TX][l - 1] = cmp < 0 ? 1 : 2;
-  cs->nonce[ASN_RX][l - 1] = cmp < 0 ? 2 : 1;
-}
-
-typedef struct {
-  u8 signature[64];
-  u8 contents[32];
-} asn_crypto_self_signed_key_t;
-
-static uword
-asn_crypto_is_valid_self_signed_key (asn_crypto_self_signed_key_t * ssk, asn_crypto_public_keys_t * public)
-{
-  u64 tmp_len;
-  asn_crypto_self_signed_key_t tmp;
-  int r = crypto_sign_open ((u8 *) &tmp, &tmp_len, (u8 *) ssk, sizeof (ssk[0]), public->auth_key);
-  if (r >= 0)
-    {
-      ASSERT (tmp_len == sizeof (tmp.contents));
-      ASSERT (! memcmp (tmp.contents, ssk->contents, sizeof (tmp.contents)));
-    }
-  return r < 0 ? 0 : 1;
-}
-
-static void
-asn_crypto_create_keys (asn_crypto_public_keys_t * public, asn_crypto_private_keys_t * private, int want_random)
-{
-  asn_crypto_self_signed_key_t ssk;
-  u64 ssk_len;
-
-  crypto_sign_keypair (public->auth_key, private->auth_key, want_random);
-  crypto_box_keypair (public->encrypt_key, private->encrypt_key, want_random);
-
-  memcpy (ssk.contents, public->encrypt_key, sizeof (ssk.contents));
-  ssk_len = sizeof (ssk.contents);
-  crypto_sign ((u8 *) &ssk, &ssk_len, public->encrypt_key, ssk_len, private->auth_key);
-  ASSERT (ssk_len == sizeof (ssk));
-  memcpy (public->self_signed_encrypt_key, ssk.signature, sizeof (public->self_signed_encrypt_key));
-
-  ASSERT (asn_crypto_is_valid_self_signed_key (&ssk, public));
-}
-
 #define foreach_asn_session_state               \
   _ (opened)					\
   _ (provisional)                               \
@@ -385,8 +301,91 @@ typedef struct asn_main_t {
   u32 self_user_index;
 
   asn_known_users_t known_users[ASN_N_RX_TX];
-
 } asn_main_t;
+
+#endif /* included_asn_h */
+
+u8 * format_asn_pdu_id (u8 * s, va_list * va)
+{
+  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
+  char * t;
+  switch (id)
+    {
+#define _(f,n) case ASN_PDU_##f: t = #f; break;
+      foreach_asn_pdu_id
+#undef _
+
+    default:
+      return format (s, "unknown 0x%x", id);
+    }
+
+  vec_add (s, t, strlen (t));
+
+  return s;
+}
+
+always_inline void
+asn_crypto_increment_nonce (asn_crypto_state_t * s, asn_rx_or_tx_t rt, u32 increment)
+{
+  u32 u = increment;
+  i32 i;
+  for (i = ARRAY_LEN (s->nonce[rt]) - 1; i >= 0; i--)
+    {
+      u += s->nonce[rt][i];
+      s->nonce[rt][i] = u;
+      u >>= BITS (s->nonce[rt][i]);
+    }
+}
+
+static void asn_crypto_set_nonce (asn_crypto_state_t * cs, u8 * self_public_key, u8 * peer_public_key,
+				  u8 * nonce)
+{
+  int cmp = memcmp (self_public_key, peer_public_key, STRUCT_SIZE_OF (asn_crypto_ephemeral_keys_t, public));
+  int l = sizeof (cs->nonce[ASN_RX]);
+  memcpy (cs->nonce[ASN_RX], nonce, l);
+  memcpy (cs->nonce[ASN_TX], nonce, l);
+  cs->nonce[ASN_TX][l - 2] = 0;
+  cs->nonce[ASN_RX][l - 2] = 0;
+  cs->nonce[ASN_TX][l - 1] = cmp < 0 ? 1 : 2;
+  cs->nonce[ASN_RX][l - 1] = cmp < 0 ? 2 : 1;
+}
+
+typedef struct {
+  u8 signature[64];
+  u8 contents[32];
+} asn_crypto_self_signed_key_t;
+
+static uword
+asn_crypto_is_valid_self_signed_key (asn_crypto_self_signed_key_t * ssk, asn_crypto_public_keys_t * public)
+{
+  u64 tmp_len;
+  asn_crypto_self_signed_key_t tmp;
+  int r = crypto_sign_open ((u8 *) &tmp, &tmp_len, (u8 *) ssk, sizeof (ssk[0]), public->auth_key);
+  if (r >= 0)
+    {
+      ASSERT (tmp_len == sizeof (tmp.contents));
+      ASSERT (! memcmp (tmp.contents, ssk->contents, sizeof (tmp.contents)));
+    }
+  return r < 0 ? 0 : 1;
+}
+
+static void
+asn_crypto_create_keys (asn_crypto_public_keys_t * public, asn_crypto_private_keys_t * private, int want_random)
+{
+  asn_crypto_self_signed_key_t ssk;
+  u64 ssk_len;
+
+  crypto_sign_keypair (public->auth_key, private->auth_key, want_random);
+  crypto_box_keypair (public->encrypt_key, private->encrypt_key, want_random);
+
+  memcpy (ssk.contents, public->encrypt_key, sizeof (ssk.contents));
+  ssk_len = sizeof (ssk.contents);
+  crypto_sign ((u8 *) &ssk, &ssk_len, public->encrypt_key, ssk_len, private->auth_key);
+  ASSERT (ssk_len == sizeof (ssk));
+  memcpy (public->self_signed_encrypt_key, ssk.signature, sizeof (public->self_signed_encrypt_key));
+
+  ASSERT (asn_crypto_is_valid_self_signed_key (&ssk, public));
+}
 
 always_inline u8 *
 asn_user_key_to_mem (asn_main_t * am, asn_rx_or_tx_t rt, uword k)
@@ -674,7 +673,9 @@ clib_error_t * asn_exec (asn_socket_t * as,
   return asn_socket_tx (as);
 }
 
-static clib_error_t * asn_socket_exec_newuser_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_main_t * am, asn_socket_t * as,
+									 asn_pdu_ack_t * ack, u32 n_bytes_ack_data,
+									 asn_user_type_t user_type)
 {
   struct {
     u8 private_encrypt_key[crypto_box_private_key_bytes];
@@ -682,7 +683,6 @@ static clib_error_t * asn_socket_exec_newuser_ack_handler (asn_main_t * am, asn_
   } * keys = (void *) ack->data;
   u32 ui;
   asn_crypto_private_keys_t pk;
-  asn_user_type_t user_type = ASN_USER_TYPE_actual;
 
   if (am->verbose)
     clib_warning ("newuser %U", format_asn_user_type, user_type);
@@ -697,6 +697,15 @@ static clib_error_t * asn_socket_exec_newuser_ack_handler (asn_main_t * am, asn_
 
   return 0;
 }
+
+#define _(f)								\
+  clib_error_t * asn_socket_exec_newuser_ack_handler_for_##f##_user (asn_main_t * am, asn_socket_t * as, \
+									    asn_pdu_ack_t * ack, u32 n_bytes_ack_data) \
+  { return asn_socket_exec_newuser_ack_handler_for_user_type (am, as, ack, n_bytes_ack_data, ASN_USER_TYPE_##f);  }
+
+foreach_asn_user_type
+
+#undef _
 
 static clib_error_t * asn_socket_exec_blob_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
@@ -1331,7 +1340,7 @@ int test_asn_main (unformat_input_t * input)
 		  case ASN_SESSION_STATE_opened:
 		    if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
 		      {
-			error = asn_exec (as, asn_socket_exec_newuser_ack_handler, "newuser%c-b", 0);
+			error = asn_exec (as, asn_socket_exec_newuser_ack_handler_for_actual_user, "newuser%c-b", 0);
 			if (error)
 			  clib_error_report (error);
 		      }
