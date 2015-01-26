@@ -3,6 +3,8 @@
 
 typedef struct {
   asn_socket_t asn_socket;
+
+  f64 last_echo_time;
 } test_asn_socket_t;
 
 typedef struct {
@@ -143,7 +145,6 @@ int test_asn_main (unformat_input_t * input)
 
   {
     int i;
-    f64 last_scan_time = unix_time_now ();
 
     for (i = 0; i < tm->n_clients; i++)
       {
@@ -160,15 +161,12 @@ int test_asn_main (unformat_input_t * input)
         test_asn_socket_t * tas;
 	asn_socket_t * as;
 	websocket_socket_t * ws;
-        f64 now, dt;
+        f64 now;
 	uword i;
 
-	dt = 1;
-        now = unix_time_now ();
-        if (now - last_scan_time < dt)
-	  continue;
-
 	websocket_close_all_sockets_with_no_handshake (wsm);
+
+        now = unix_time_now ();
 
 	vec_foreach_index (i, as_pool)
 	  {
@@ -178,7 +176,8 @@ int test_asn_main (unformat_input_t * input)
 	    as = &tas->asn_socket;
 	    ws = &as->websocket_socket;
 
-	    if (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client)
+	    if (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client
+		&& ws->handshake_rx)
 	      {
 		switch (as->session_state)
 		  {
@@ -189,9 +188,16 @@ int test_asn_main (unformat_input_t * input)
 		    break;
 
 		  case ASN_SESSION_STATE_established:
-		    error = asn_exec (as, asn_socket_exec_echo_ack_handler, "echo%cfoo", 0);
-		    if (error)
-		      clib_error_report (error);
+		    if (now - tas->last_echo_time > 1 && 1)
+		      {
+			error = asn_exec (as, asn_socket_exec_echo_ack_handler, "echo%cfoo", 0);
+			if (error)
+			  clib_error_report (error);
+			if (tas->last_echo_time == 0)
+			  tas->last_echo_time = now;
+			else
+			  tas->last_echo_time += 1;
+		      }
 
 		    if (0) {
 		      clib_error_t * error;
@@ -215,8 +221,6 @@ int test_asn_main (unformat_input_t * input)
 		  }
 	      }
           }
-
-	last_scan_time += dt;
       }
   }
 

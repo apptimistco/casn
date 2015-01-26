@@ -411,7 +411,11 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
     case ASN_PDU_login:
     case ASN_PDU_resume: {
       if (! is_error && acked_pdu_id == ASN_PDU_login)
-	as->session_state = ASN_SESSION_STATE_established;
+	{
+	  as->session_state = ASN_SESSION_STATE_established;
+	  if (ack->header.casn_request_id.is_self_user_login == 1)
+	    as->self_user_login_in_progress = 0;
+	}
 
       /* Login/resume response contains new emphemeral public key and nonce. */
       {
@@ -562,12 +566,13 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
   return s;
 }
 
-clib_error_t * asn_socket_login_for_user (asn_socket_t * as, asn_user_t * au)
+clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au)
 {
   asn_pdu_login_t * l;
   l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
   memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
   memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
+  l->header.casn_request_id.is_self_user_login = au->index == am->self_user_index;
   return asn_socket_tx (as);
 }
 
@@ -722,14 +727,6 @@ asn_main_did_receive_handshake (websocket_main_t * wsm, websocket_socket_t * ws)
       if (error)
 	goto done;
 
-      if (! pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-	{
-	  asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
-	  error = asn_socket_login_for_user (as, au);
-	  if (error)
-	    goto done;
-	}
-
       if (am->verbose)
 	clib_warning ("handshake received; ephemeral sent %U", format_hex_bytes, ek->public, sizeof (ek->public));
     }
@@ -843,13 +840,18 @@ foreach_asn_user_type
 clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
 {
   clib_error_t * error = 0;
+  uword self_user_is_unknown = pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
 
-  if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-    error = asn_exec (as, asn_socket_exec_newuser_ack_handler_for_actual_user, "newuser%c-b", 0);
-  else
+  if (self_user_is_unknown && ! as->unknown_self_user_newuser_in_progress)
+    {
+      error = asn_exec (as, asn_socket_exec_newuser_ack_handler_for_actual_user, "newuser%c-b", 0);
+      as->unknown_self_user_newuser_in_progress = error == 0;
+    }
+  else if (! self_user_is_unknown && ! as->self_user_login_in_progress)
     {
       asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
-      error = asn_socket_login_for_user (as, au);
+      error = asn_socket_login_for_user (am, as, au);
+      as->self_user_login_in_progress = error == 0;
     }
 
   return error;

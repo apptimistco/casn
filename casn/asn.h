@@ -91,7 +91,10 @@ typedef CLIB_PACKED (struct {
 
     struct {
       asn_pdu_id_t id : 8;
-      u8 unused[3];
+
+      u8 is_self_user_login;
+
+      u8 unused[2];
 
       u32 ack_handler_index;
     } casn_request_id;
@@ -254,14 +257,17 @@ typedef struct asn_socket_t {
   /* Hash table which has entries for all user indices logged in on this socket. */
   uword * users_logged_in_this_socket;
 
-  asn_session_state_t session_state;
-
   asn_crypto_ephemeral_keys_t ephemeral_keys;
 
   /* Nonce and shared secret. */
   asn_crypto_state_t ephemeral_crypto_state;
 
   asn_ack_handler_t ** ack_handler_pool;
+
+  asn_session_state_t session_state;
+
+  u32 unknown_self_user_newuser_in_progress : 1;
+  u32 self_user_login_in_progress : 1;
 } asn_socket_t;
 
 always_inline void
