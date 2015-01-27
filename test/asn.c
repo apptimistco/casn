@@ -33,7 +33,7 @@ static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_main_t * am, asn
   return 0;
 }
 
-static clib_error_t * asn_socket_exec_echo_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   if (n_bytes_ack_data > 1)
     clib_warning ("%*s", n_bytes_ack_data - (ack->data[n_bytes_ack_data - 1] == '\n'), ack->data);
@@ -187,21 +187,29 @@ int test_asn_main (unformat_input_t * input)
 		      clib_error_report (error);
 		    break;
 
-		  case ASN_SESSION_STATE_established:
-		    if (now - tas->last_echo_time > 1 && 1)
+		  case ASN_SESSION_STATE_established: {
+		    f64 dt = 1;
+		    if (now - tas->last_echo_time > dt)
 		      {
-			error = asn_exec (as, asn_socket_exec_echo_ack_handler, "echo%cfoo", 0);
+			if (0) {
+			error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
 			if (error)
 			  clib_error_report (error);
+			}
+
+			error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "mark%c37.7833%c122.4167", 0, 0);
+			if (error)
+			  clib_error_report (error);
+
 			if (tas->last_echo_time == 0)
 			  tas->last_echo_time = now;
 			else
-			  tas->last_echo_time += 1;
+			  tas->last_echo_time += dt;
 		      }
 
 		    if (0) {
 		      clib_error_t * error;
-		      error = asn_exec (as, asn_socket_exec_echo_ack_handler, "blob%cfart%c-%c%ccontents of fart",
+		      error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "blob%cfart%c-%c%ccontents of fart",
 					0, 0, 0, 0);
 		      if (error)
 			clib_error_report (error);
@@ -215,6 +223,7 @@ int test_asn_main (unformat_input_t * input)
 		    }
 
 		    break;
+		  }
 
 		  default:
 		    break;

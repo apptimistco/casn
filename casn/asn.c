@@ -377,6 +377,25 @@ u8 * format_asn_socket (u8 * s, va_list * va)
   return s;
 }
 
+static u8 * format_asn_pdu_id (u8 * s, va_list * va)
+{
+  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
+  char * t;
+  switch (id)
+    {
+#define _(f,n) case ASN_PDU_##f: t = #f; break;
+      foreach_asn_pdu_id
+#undef _
+
+    default:
+      return format (s, "unknown 0x%x", id);
+    }
+
+  vec_add (s, t, strlen (t));
+
+  return s;
+}
+
 #if 0
 static clib_error_t *
 asn_socket_tx_ack_pdu (asn_main_t * am, asn_socket_t * as, asn_ack_pdu_status_t status)
@@ -453,25 +472,6 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
   return error;
 }
 
-static u8 * format_asn_pdu_id (u8 * s, va_list * va)
-{
-  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
-  char * t;
-  switch (id)
-    {
-#define _(f,n) case ASN_PDU_##f: t = #f; break;
-      foreach_asn_pdu_id
-#undef _
-
-    default:
-      return format (s, "unknown 0x%x", id);
-    }
-
-  vec_add (s, t, strlen (t));
-
-  return s;
-}
-
 static u8 * format_asn_ack_pdu_status (u8 * s, va_list * va)
 {
   asn_ack_pdu_status_t status = va_arg (*va, asn_ack_pdu_status_t);
@@ -499,6 +499,43 @@ static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
 
   if (n_bytes > sizeof (ack[0]))
     s = format (s, ", data %U", format_hex_bytes, ack->data, n_bytes - sizeof (ack[0]));
+
+  return s;
+}
+
+static clib_error_t *
+asn_socket_rx_blob_pdu (asn_main_t * am,
+			asn_socket_t * as,
+			asn_pdu_blob_t * blob,
+			uword n_bytes_in_pdu)
+{
+  clib_error_t * error = 0;
+  return error;
+}
+
+static u8 * format_asn_time_stamp (u8 * s, va_list * va)
+{
+  u64 ts = va_arg (*va, u64);
+  f64 t = clib_net_to_host_u64 (ts) * 1e-9;
+  return format (s, "%U", format_time_float, "y/m/d H:M:S:F", t);
+}
+
+static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
+{
+  asn_pdu_blob_t * blob = va_arg (*va, asn_pdu_blob_t *);
+  u32 n_bytes = va_arg (*va, u32);
+  u32 n_bytes_in_blob_contents = n_bytes - sizeof (blob[0]) - blob->n_name_bytes;
+
+  s = format (s, "blob owner %U, author %U, time %U",
+	      format_hex_bytes, blob->owner, sizeof (blob->owner),
+	      format_hex_bytes, blob->author, sizeof (blob->author),
+	      format_asn_time_stamp, blob->time_stamp_in_nsec_from_1970);
+
+  if (blob->n_name_bytes > 0)
+    s = format (s, ", name `%*s'", blob->n_name_bytes, blob->name);
+
+  if (n_bytes_in_blob_contents > 0)
+    s = format (s, ", contents %U", format_hex_bytes, blob->name + blob->n_name_bytes, n_bytes_in_blob_contents);
 
   return s;
 }
@@ -543,7 +580,6 @@ _ (pause)
 _ (quit)
 _ (redirect)
 _ (resume)
-_ (blob)
 _ (index)
 
 #undef _
@@ -813,14 +849,19 @@ static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_mai
   } * keys = (void *) ack->data;
   u32 ui;
   asn_crypto_private_keys_t pk;
-
-  if (am->verbose)
-    clib_warning ("newuser %U", format_asn_user_type, user_type);
+  asn_user_t * au;
 
   memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
   memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
 
-  ui = asn_main_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
+  ui = asn_main_new_user_with_type (am, ASN_TX, user_type, /* with_public_keys */ 0, &pk);
+  au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, ui);
+
+  if (am->verbose)
+    clib_warning ("newuser type %U, keys %U %U",
+		  format_asn_user_type, user_type,
+		  format_hex_bytes, au->crypto_keys.private.encrypt_key, sizeof (au->crypto_keys.private.encrypt_key),
+		  format_hex_bytes, au->crypto_keys.private.auth_key, sizeof (au->crypto_keys.private.auth_key));
 
   if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
     am->self_user_index = ui;
