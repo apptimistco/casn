@@ -78,7 +78,7 @@ POST_INSTALL = :
 NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
-bin_PROGRAMS = asn$(EXEEXT)
+bin_PROGRAMS = asntest$(EXEEXT)
 subdir = .
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) depcomp \
@@ -135,9 +135,9 @@ am_libcasn_a_OBJECTS = casn/asn_app.$(OBJEXT) casn/asn.$(OBJEXT) \
 	casn/tweetnacl.$(OBJEXT)
 libcasn_a_OBJECTS = $(am_libcasn_a_OBJECTS)
 PROGRAMS = $(bin_PROGRAMS)
-am_asn_OBJECTS = test/asn.$(OBJEXT)
-asn_OBJECTS = $(am_asn_OBJECTS)
-asn_DEPENDENCIES = libcasn.a
+am_asntest_OBJECTS = test/asn.$(OBJEXT)
+asntest_OBJECTS = $(am_asntest_OBJECTS)
+asntest_DEPENDENCIES = libcasn.a
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -166,8 +166,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(libcasn_a_SOURCES) $(asn_SOURCES)
-DIST_SOURCES = $(libcasn_a_SOURCES) $(asn_SOURCES)
+SOURCES = $(libcasn_a_SOURCES) $(asntest_SOURCES)
+DIST_SOURCES = $(libcasn_a_SOURCES) $(asntest_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -302,8 +302,8 @@ AM_CFLAGS = -Wall
 lib_LIBRARIES = libcasn.a
 libcasn_a_SOURCES = casn/asn_app.c casn/asn.c casn/tweetnacl.c
 nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
-asn_SOURCES = test/asn.c
-asn_LDADD = libcasn.a -luclib
+asntest_SOURCES = test/asn.c
+asntest_LDADD = libcasn.a -luclib
 all: all-am
 
 .SUFFIXES:
@@ -441,9 +441,9 @@ test/$(DEPDIR)/$(am__dirstamp):
 test/asn.$(OBJEXT): test/$(am__dirstamp) \
 	test/$(DEPDIR)/$(am__dirstamp)
 
-asn$(EXEEXT): $(asn_OBJECTS) $(asn_DEPENDENCIES) $(EXTRA_asn_DEPENDENCIES) 
-	@rm -f asn$(EXEEXT)
-	$(AM_V_CCLD)$(LINK) $(asn_OBJECTS) $(asn_LDADD) $(LIBS)
+asntest$(EXEEXT): $(asntest_OBJECTS) $(asntest_DEPENDENCIES) $(EXTRA_asntest_DEPENDENCIES) 
+	@rm -f asntest$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(asntest_OBJECTS) $(asntest_LDADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)

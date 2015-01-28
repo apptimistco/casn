@@ -22,6 +22,8 @@ typedef struct {
   } user_keys;
 
   u32 n_clients;
+
+  f64 time_interval_between_echos;
 } test_asn_main_t;
 
 static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
@@ -41,78 +43,16 @@ static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handle
 }
 
 typedef struct {
-  u8 user[8];
-  union {
-    struct {
-      i32 longitude_mul_1e6;
-      i32 latitude_mul_1e6;
-    };
-    struct {
-      /* 0x7X where X is ETA. */
-      u8 place_and_eta;
-
-      /* First 7 bytes of place/event public key. */
-      u8 place[7];
-    };
-  };
-} asn_mark_response_t;
-
-always_inline uword
-asn_mark_response_is_place (asn_mark_response_t * r)
-{ return (r->place_and_eta & 0xf0) == 0x70; }
-
-always_inline uword
-asn_mark_response_place_eta (asn_mark_response_t * r)
-{
-  ASSERT (asn_mark_response_is_place (r));
-  return r->place_and_eta & 0xf;
-}
-
-static u8 * format_asn_mark_response (u8 * s, va_list * va)
-{
-  asn_mark_response_t * r = va_arg (*va, asn_mark_response_t *);
-  int is_place = asn_mark_response_is_place (r);
-
-  s = format (s, "user %U ", format_hex_bytes, r->user, sizeof (r->user));
-  if (is_place)
-    s = format (s, "place %U eta %d", format_hex_bytes, r->place, sizeof (r->place),
-		asn_mark_response_place_eta (r));
-  else
-    s = format (s, "location %.9f %.9f",
-		1e-6 * clib_net_to_host_i32 (r->longitude_mul_1e6),
-		1e-6 * clib_net_to_host_i32 (r->latitude_mul_1e6));
-  return s;
-}
-
-asn_user_t *
-asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
-		      u8 * encrypt_key, u8 * auth_key)
-{
-  asn_user_t * au = asn_user_with_encrypt_key (am, rt, encrypt_key);
-  if (! au)
-    {
-      asn_crypto_public_keys_t pk;
-      memcpy (pk.encrypt_key, encrypt_key, sizeof (pk.encrypt_key));
-      memcpy (pk.auth_key, auth_key, sizeof (pk.auth_key));
-      au = asn_new_user_with_type (am, rt, user_type, &pk, /* private keys */ 0);
-    }
-
-  ASSERT (au->user_type == user_type);
-  if (auth_key)
-    memcpy (au->crypto_keys.public.auth_key, auth_key, sizeof (au->crypto_keys.public.auth_key));
-
-  return au;
-}
-
-typedef struct {
   asn_exec_ack_handler_t ack_handler;
   u8 user_encrypt_key[crypto_box_public_key_bytes];
+  asn_user_mark_response_t mark_response;
 } learn_user_from_auth_response_exec_ack_handler_t;
 
 static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   asn_main_t * am = ah->asn_main;
   learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
+  asn_user_t * au;
 
   if (n_bytes_ack_data != crypto_sign_public_key_bytes)
     return clib_error_return (0, "expected 32 bytes asn/auth; received %d", n_bytes_ack_data);
@@ -122,24 +62,43 @@ static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t 
 		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
 		  format_hex_bytes, ack->data, n_bytes_ack_data);
 
-  asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack->data);
+  {
+    asn_user_mark_response_t * mr = &lah->mark_response;
+    uword is_place = asn_user_mark_response_is_place (mr);
+    au = asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack->data);
+    au->current_marks_are_valid |= 1 << is_place;
+    au->current_marks[is_place] = mr[0];
+  }
 
   return 0;
 }
 
 static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
-  asn_mark_response_t * r = asn_pdu_contents_for_blob (blob);
+  clib_error_t * error = 0;
+  asn_user_mark_response_t * r = asn_pdu_contents_for_blob (blob);
+  asn_user_t * au;
 
   if (am->verbose)
-    clib_warning ("%U", format_asn_mark_response, r);
+    clib_warning ("%U", format_asn_user_mark_response, r);
 		
+  /* If user exists just update most current mark. */
+  au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+  if (au)
+    {
+      uword is_place = asn_user_mark_response_is_place (r);
+      au->current_marks_are_valid |= 1 << is_place;
+      au->current_marks[is_place] = r[0];
+      return error;
+    }
+
   learn_user_from_auth_response_exec_ack_handler_t * lah = asn_exec_ack_handler_create_with_function_in_container
     (learn_user_from_auth_response_ack,
      sizeof (learn_user_from_auth_response_exec_ack_handler_t),
      STRUCT_OFFSET_OF (learn_user_from_auth_response_exec_ack_handler_t, ack_handler));
 
   memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
+  lah->mark_response = r[0];
 
   return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth", 0, format_hex_bytes, r->user, sizeof (r->user));
 }
@@ -149,7 +108,8 @@ static clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 l
 
 static clib_error_t * unnamed_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
-  clib_warning ("%*s", asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu), asn_pdu_contents_for_blob (blob));
+  if (am->verbose)
+    clib_warning ("%*s", asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu), asn_pdu_contents_for_blob (blob));
   return 0;
 }
 
@@ -165,6 +125,7 @@ int test_asn_main (unformat_input_t * input)
   wsm->verbose = 0;
   am->verbose = 0;
   tm->n_clients = 1;
+  tm->time_interval_between_echos = 1 /* sec */;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -204,6 +165,8 @@ int test_asn_main (unformat_input_t * input)
           wsm->verbose = 1;
           am->verbose = 1;
         }
+      else if (unformat (input, "dt %f", &tm->time_interval_between_echos))
+	;
       else
         {
           clib_warning ("unknown input `%U'", format_unformat_error, input);
@@ -271,9 +234,11 @@ int test_asn_main (unformat_input_t * input)
     asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
     asn_set_blob_handler_for_name (am, unnamed_blob_handler, "");
 
+    clib_mem_trace (0);
+
     while (pool_elts (am->websocket_main.user_socket_pool) > (am->server_config ? 1 : 0))
       {
-        am->unix_file_poller.poll_for_input (&am->unix_file_poller, /* timeout */ 10e-3);
+	am->unix_file_poller.poll_for_input (&am->unix_file_poller, /* timeout */ 10e-3);
 
 	test_asn_socket_t * as_pool = am->websocket_main.user_socket_pool;
         test_asn_socket_t * tas;
@@ -306,8 +271,7 @@ int test_asn_main (unformat_input_t * input)
 		    break;
 
 		  case ASN_SESSION_STATE_established: {
-		    f64 dt = 1;
-		    if (now - tas->last_echo_time > dt)
+		    if (now - tas->last_echo_time > tm->time_interval_between_echos)
 		      {
 			if (0) {
 			  error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
@@ -341,10 +305,13 @@ int test_asn_main (unformat_input_t * input)
 			    }
 			}
 
+			if (am->verbose)
+			  clib_warning ("%U", format_clib_mem_usage, /* verbose */ 0);
+
 			if (tas->last_echo_time == 0)
 			  tas->last_echo_time = now;
 			else
-			  tas->last_echo_time += dt;
+			  tas->last_echo_time += tm->time_interval_between_echos;
 		      }
 
 		    if (0) {

@@ -192,6 +192,34 @@ typedef enum {
 } asn_user_type_t;
 
 typedef struct {
+  u8 user[8];
+  union {
+    struct {
+      i32 longitude_mul_1e6;
+      i32 latitude_mul_1e6;
+    };
+    struct {
+      /* 0x7X where X is ETA. */
+      u8 place_and_eta;
+
+      /* First 7 bytes of place/event public key. */
+      u8 place[7];
+    };
+  };
+} asn_user_mark_response_t;
+
+always_inline uword
+asn_user_mark_response_is_place (asn_user_mark_response_t * r)
+{ return (r->place_and_eta & 0xf0) == 0x70; }
+
+always_inline uword
+asn_user_mark_response_place_eta (asn_user_mark_response_t * r)
+{
+  ASSERT (asn_user_mark_response_is_place (r));
+  return r->place_and_eta & 0xf;
+}
+
+typedef struct {
   /* ASN_USER_TYPE_* */
   asn_user_type_t user_type;
 
@@ -202,7 +230,13 @@ typedef struct {
      For most users we don't know private keys. */
   u32 private_key_is_valid : 1;
 
+  /* Indexed by is_place. */
+  u32 current_marks_are_valid : 2;
+
   asn_crypto_keys_t crypto_keys;
+
+  /* Indexed by is_place. */
+  asn_user_mark_response_t current_marks[2];
 
   union {
     struct {
@@ -212,6 +246,8 @@ typedef struct {
 
       /* Bitmap to indicate whether above array indices are valid. */
       uword * crypto_state_by_user_index_is_valid_bitmap;
+
+      u32 mark_response_is_valid[2];
     } tx;
 
     struct {
@@ -380,6 +416,10 @@ asn_new_user_with_type (asn_main_t * am,
 			asn_crypto_public_keys_t * with_public_keys,
 			asn_crypto_private_keys_t * with_private_keys);
 
+asn_user_t *
+asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
+		      u8 * encrypt_key, u8 * auth_key);
+
 clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
@@ -387,6 +427,6 @@ clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 
-format_function_t format_asn_user_type;
+format_function_t format_asn_user_type, format_asn_user_mark_response;
 
 #endif /* included_asn_h */

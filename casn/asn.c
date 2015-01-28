@@ -99,6 +99,26 @@ asn_user_by_key_key_equal (hash_t * h, uword key1, uword key2)
 }
 
 asn_user_t *
+asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
+		      u8 * encrypt_key, u8 * auth_key)
+{
+  asn_user_t * au = asn_user_with_encrypt_key (am, rt, encrypt_key);
+  if (! au)
+    {
+      asn_crypto_public_keys_t pk;
+      memcpy (pk.encrypt_key, encrypt_key, sizeof (pk.encrypt_key));
+      memcpy (pk.auth_key, auth_key, sizeof (pk.auth_key));
+      au = asn_new_user_with_type (am, rt, user_type, &pk, /* private keys */ 0);
+    }
+
+  ASSERT (au->user_type == user_type);
+  if (auth_key)
+    memcpy (au->crypto_keys.public.auth_key, auth_key, sizeof (au->crypto_keys.public.auth_key));
+
+  return au;
+}
+
+asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
 			asn_user_type_t with_user_type,
@@ -189,6 +209,22 @@ u8 * format_asn_user_type (u8 * s, va_list * va)
   return s;
 }
 
+u8 * format_asn_user_mark_response (u8 * s, va_list * va)
+{
+  asn_user_mark_response_t * r = va_arg (*va, asn_user_mark_response_t *);
+  int is_place = asn_user_mark_response_is_place (r);
+
+  s = format (s, "user %U ", format_hex_bytes, r->user, sizeof (r->user));
+  if (is_place)
+    s = format (s, "place %U eta %d", format_hex_bytes, r->place, sizeof (r->place),
+		asn_user_mark_response_place_eta (r));
+  else
+    s = format (s, "location %.9f %.9f",
+		1e-6 * clib_net_to_host_i32 (r->longitude_mul_1e6),
+		1e-6 * clib_net_to_host_i32 (r->latitude_mul_1e6));
+  return s;
+}
+
 u8 * format_asn_user (u8 * s, va_list * va)
 {
   asn_user_t * au = va_arg (*va, asn_user_t *);
@@ -276,7 +312,8 @@ asn_socket_tx_add_data (asn_socket_t * as, void * data, uword n_data_bytes)
   memcpy (d, data, n_data_bytes);
 }
 
-static clib_error_t * asn_socket_transmit_frame (asn_socket_t * as, asn_pdu_frame_t * f, uword n_user_data_bytes, uword is_last_frame)
+static clib_error_t *
+asn_socket_transmit_frame (asn_socket_t * as, asn_pdu_frame_t * f, uword n_user_data_bytes, uword is_last_frame)
 {
   websocket_socket_t * ws = &as->websocket_socket;
   asn_crypto_state_t * cs = &as->ephemeral_crypto_state;
@@ -362,7 +399,7 @@ static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t
 
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * f, char * fmt, ...)
 {
-  asn_exec_ack_handler_t * ah = asn_exec_ack_handler_create_with_function (f);
+  asn_exec_ack_handler_t * ah = f ? asn_exec_ack_handler_create_with_function (f) : 0;
   clib_error_t * error = 0;
   va_list va;
   va_start (va, fmt);
@@ -492,11 +529,14 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 
       ah = as->exec_ack_handler_pool[ai];
       pool_put_index (as->exec_ack_handler_pool, ai);
-      if (ah && ah->function)
+      if (ah)
 	{
-	  ah->asn_main = am;
-	  ah->asn_socket = as;
-	  error = ah->function (ah, ack, n_bytes_in_pdu - sizeof (ack[0]));
+	  if (ah->function)
+	    {
+	      ah->asn_main = am;
+	      ah->asn_socket = as;
+	      error = ah->function (ah, ack, n_bytes_in_pdu - sizeof (ack[0]));
+	    }
 	  clib_mem_free_in_container (ah, ah->container_offset_of_object);
 	}
       return error;
