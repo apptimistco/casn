@@ -167,8 +167,15 @@ typedef CLIB_PACKED (struct {
   u8 contents[0];
 }) asn_pdu_blob_t;
 
+always_inline void *
+asn_pdu_contents_for_blob (asn_pdu_blob_t * b)
+{
+  /* Content is after name. */
+  return b->name + b->n_name_bytes;
+}
+
 #define foreach_asn_user_type \
-  _ (actual) _ (forum) _ (bridge)
+  _ (unspecified) _ (actual) _ (forum) _ (bridge) _ (place)
 
 typedef enum {
 #define _(f) ASN_USER_TYPE_##f,
@@ -242,8 +249,29 @@ asn_pdu_free (asn_pdu_t * p)
 
 struct asn_main_t;
 struct asn_socket_t;
+struct asn_exec_ack_handler_t;
 
-typedef clib_error_t * (asn_ack_handler_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data);
+typedef clib_error_t * (asn_exec_ack_handler_function_t) (struct asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data);
+
+typedef struct asn_exec_ack_handler_t {
+  struct asn_main_t * asn_main;
+  struct asn_socket_t * asn_socket;
+  u32 container_offset_of_object;
+  asn_exec_ack_handler_function_t * function;
+} asn_exec_ack_handler_t;
+
+always_inline void *
+asn_exec_ack_handler_create_with_function_in_container (asn_exec_ack_handler_function_t * f, uword sizeof_object, uword object_offset_of_ack_handler)
+{
+  asn_exec_ack_handler_t * ah = clib_mem_alloc_in_container (sizeof (ah[0]), sizeof_object, object_offset_of_ack_handler);
+  ah->function = f;
+  ah->container_offset_of_object = object_offset_of_ack_handler;
+  return (void *) ah - object_offset_of_ack_handler;
+}
+
+always_inline asn_exec_ack_handler_t *
+asn_exec_ack_handler_create_with_function (asn_exec_ack_handler_function_t * f)
+{ return asn_exec_ack_handler_create_with_function_in_container (f, sizeof (asn_exec_ack_handler_t), /* object_offset_of_ack_handler */ 0); }
 
 typedef struct asn_socket_t {
   websocket_socket_t websocket_socket;
@@ -262,7 +290,7 @@ typedef struct asn_socket_t {
   /* Nonce and shared secret. */
   asn_crypto_state_t ephemeral_crypto_state;
 
-  asn_ack_handler_t ** ack_handler_pool;
+  asn_exec_ack_handler_t ** exec_ack_handler_pool;
 
   asn_session_state_t session_state;
 
@@ -287,6 +315,13 @@ typedef struct {
   uword * user_by_public_encrypt_key;
 } asn_known_users_t;
 
+typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);
+
+typedef struct {
+  asn_blob_handler_function_t * handler_function;
+  u8 * name;
+} asn_blob_handler_t;
+
 typedef struct asn_main_t {
   websocket_main_t websocket_main;
 
@@ -306,6 +341,12 @@ typedef struct asn_main_t {
   u32 self_user_index;
 
   asn_known_users_t known_users[ASN_N_RX_TX];
+
+  u8 * blob_name_vector_for_reuse;
+
+  asn_blob_handler_t * blob_handlers;
+
+  uword * blob_handler_index_by_name;
 } asn_main_t;
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket);
@@ -319,11 +360,12 @@ asn_main_new_user_with_type (asn_main_t * am,
                              asn_crypto_public_keys_t * with_public_keys,
 			     asn_crypto_private_keys_t * with_private_keys);
 
-clib_error_t * asn_exec (asn_socket_t * as,
-			 asn_ack_handler_t * ack_handler,
-			 char * fmt, ...);
+clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
+clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
 clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
+
+void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 
 format_function_t format_asn_user_type;
 

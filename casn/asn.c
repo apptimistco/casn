@@ -109,6 +109,11 @@ asn_main_new_user_with_type (asn_main_t * am,
   asn_known_users_t * ku = &am->known_users[rt];
   asn_crypto_keys_t * k;
 
+  /* See if user already exists. */
+  if (with_public_keys)
+    {
+    }
+
   pool_get (ku->user_pool, au);
   au->index = au - ku->user_pool;
   au->user_type = with_user_type;
@@ -324,29 +329,43 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
   return error;
 }
 
-clib_error_t * asn_exec (asn_socket_t * as,
-			 asn_ack_handler_t * ack_handler,
-			 char * fmt, ...)
+static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, va_list * va)
 {
-  va_list va;
-  u8 * s;
-
-  va_start (va, fmt);
-  s = va_format (0, fmt, &va);
-  va_end (va);
+  u8 * s = va_format (0, fmt, va);
 
   asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
   memcpy (h->data, s, vec_len (s));
   vec_free (s);
 
   {
-    asn_ack_handler_t ** ah;
-    pool_get (as->ack_handler_pool, ah);
+    asn_exec_ack_handler_t ** ah;
+    pool_get (as->exec_ack_handler_pool, ah);
     ah[0] = ack_handler;
-    h->casn_request_id.ack_handler_index = ah - as->ack_handler_pool;
+    h->casn_request_id.ack_handler_index = ah - as->exec_ack_handler_pool;
   }
 
   return asn_socket_tx (as);
+}
+
+clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * f, char * fmt, ...)
+{
+  asn_exec_ack_handler_t * ah = asn_exec_ack_handler_create_with_function (f);
+  clib_error_t * error = 0;
+  va_list va;
+  va_start (va, fmt);
+  error = asn_exec_helper (as, ah, fmt, &va);
+  va_end (va);
+  return error;
+}
+
+clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ah, char * fmt, ...)
+{
+  clib_error_t * error = 0;
+  va_list va;
+  va_start (va, fmt);
+  error = asn_exec_helper (as, ah, fmt, &va);
+  va_end (va);
+  return error;
 }
 
 static u8 * format_asn_session_state (u8 * s, va_list * va)
@@ -450,17 +469,24 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 
     case ASN_PDU_exec: {
       u32 ai = ack->header.casn_request_id.ack_handler_index;
-      asn_ack_handler_t * ah;
+      asn_exec_ack_handler_t * ah;
 
-      if (pool_is_free_index (as->ack_handler_pool, ai))
+      if (pool_is_free_index (as->exec_ack_handler_pool, ai))
 	{
-	  error = clib_error_return (0, "unknown ack handler with index 0x%x", ai);
+	  error = clib_error_return (0, "unknown exec ack handler with index 0x%x", ai);
 	  goto done;
 	}
 
-      ah = as->ack_handler_pool[ai];
-      pool_put_index (as->ack_handler_pool, ai);
-      return ah (am, as, ack, n_bytes_in_pdu - sizeof (ack[0]));
+      ah = as->exec_ack_handler_pool[ai];
+      pool_put_index (as->exec_ack_handler_pool, ai);
+      if (ah && ah->function)
+	{
+	  ah->asn_main = am;
+	  ah->asn_socket = as;
+	  error = ah->function (ah, ack, n_bytes_in_pdu - sizeof (ack[0]));
+	  clib_mem_free_in_container (ah, ah->container_offset_of_object);
+	}
+      return error;
     }
 
     default:
@@ -510,6 +536,25 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
 			uword n_bytes_in_pdu)
 {
   clib_error_t * error = 0;
+  asn_blob_handler_t * bh;
+  uword * p;
+
+  vec_reset_length (am->blob_name_vector_for_reuse);
+  if (blob->n_name_bytes > 0)
+    vec_add (am->blob_name_vector_for_reuse, blob->name, blob->n_name_bytes);
+
+  p = hash_get_mem (am->blob_handler_index_by_name, am->blob_name_vector_for_reuse);
+  if (! p)
+    {
+      if (am->verbose)
+	clib_warning ("no handler for blob name `%v'", am->blob_name_vector_for_reuse);
+    }
+  else
+    {
+      bh = vec_elt_at_index (am->blob_handlers, p[0]);
+      error = bh->handler_function (am, as, blob, n_bytes_in_pdu);
+    }
+
   return error;
 }
 
@@ -839,10 +884,16 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
   return error;
 }
 
-static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_main_t * am, asn_socket_t * as,
-									 asn_pdu_ack_t * ack, u32 n_bytes_ack_data,
-									 asn_user_type_t user_type)
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_user_type_t user_type;
+} asn_exec_newuser_ack_handler_t;
+
+static clib_error_t *
+asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
+  asn_main_t * am = ah->asn_main;
+  asn_exec_newuser_ack_handler_t * nah = CONTAINER_OF (ah, asn_exec_newuser_ack_handler_t, ack_handler);
   struct {
     u8 private_encrypt_key[crypto_box_private_key_bytes];
     u8 private_auth_key[crypto_sign_private_key_bytes];
@@ -854,12 +905,12 @@ static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_mai
   memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
   memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
 
-  ui = asn_main_new_user_with_type (am, ASN_TX, user_type, /* with_public_keys */ 0, &pk);
+  ui = asn_main_new_user_with_type (am, ASN_TX, nah->user_type, /* with_public_keys */ 0, &pk);
   au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, ui);
 
   if (am->verbose)
     clib_warning ("newuser type %U, keys %U %U",
-		  format_asn_user_type, user_type,
+		  format_asn_user_type, nah->user_type,
 		  format_hex_bytes, au->crypto_keys.private.encrypt_key, sizeof (au->crypto_keys.private.encrypt_key),
 		  format_hex_bytes, au->crypto_keys.private.auth_key, sizeof (au->crypto_keys.private.auth_key));
 
@@ -869,15 +920,6 @@ static clib_error_t * asn_socket_exec_newuser_ack_handler_for_user_type (asn_mai
   return 0;
 }
 
-#define _(f)								\
-  clib_error_t * asn_socket_exec_newuser_ack_handler_for_##f##_user (asn_main_t * am, asn_socket_t * as, \
-								     asn_pdu_ack_t * ack, u32 n_bytes_ack_data) \
-  { return asn_socket_exec_newuser_ack_handler_for_user_type (am, as, ack, n_bytes_ack_data, ASN_USER_TYPE_##f);  }
-
-foreach_asn_user_type
-
-#undef _
-
 clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
 {
   clib_error_t * error = 0;
@@ -885,7 +927,12 @@ clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
 
   if (self_user_is_unknown && ! as->unknown_self_user_newuser_in_progress)
     {
-      error = asn_exec (as, asn_socket_exec_newuser_ack_handler_for_actual_user, "newuser%c-b", 0);
+      asn_exec_newuser_ack_handler_t * nah = asn_exec_ack_handler_create_with_function_in_container
+	(asn_socket_exec_newuser_ack_handler,
+	 sizeof (nah[0]),
+	 STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
+      nah->user_type = ASN_USER_TYPE_actual;
+      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b", 0);
       as->unknown_self_user_newuser_in_progress = error == 0;
     }
   else if (! self_user_is_unknown && ! as->self_user_login_in_progress)
@@ -896,6 +943,25 @@ clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
     }
 
   return error;
+}
+
+void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler_function, char * fmt, ...)
+{
+  va_list va;
+  asn_blob_handler_t * bh;
+
+  vec_add2 (am->blob_handlers, bh, 1);
+
+  bh->handler_function = handler_function;
+
+  va_start (va, fmt);
+  bh->name = va_format (0, fmt, &va);
+  va_end (va);
+
+  if (! am->blob_handler_index_by_name)
+    am->blob_handler_index_by_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
+
+  hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
 }
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket)

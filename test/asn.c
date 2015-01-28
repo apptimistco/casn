@@ -24,7 +24,7 @@ typedef struct {
   u32 n_clients;
 } test_asn_main_t;
 
-static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   if (n_bytes_ack_data > 0)
     clib_warning ("%*s", n_bytes_ack_data, ack->data);
@@ -33,12 +33,97 @@ static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_main_t * am, asn
   return 0;
 }
 
-static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   if (n_bytes_ack_data > 1)
     clib_warning ("%*s", n_bytes_ack_data - (ack->data[n_bytes_ack_data - 1] == '\n'), ack->data);
   return 0;
 }
+
+typedef struct {
+  u8 user[8];
+  union {
+    struct {
+      i32 longitude_mul_1e6;
+      i32 latitude_mul_1e6;
+    };
+    struct {
+      /* 0x7X where X is ETA. */
+      u8 place_and_eta;
+
+      /* First 7 bytes of place/event public key. */
+      u8 place[7];
+    };
+  };
+} asn_mark_response_t;
+
+always_inline uword
+asn_mark_response_is_place (asn_mark_response_t * r)
+{ return (r->place_and_eta & 0xf0) == 0x70; }
+
+always_inline uword
+asn_mark_response_place_eta (asn_mark_response_t * r)
+{
+  ASSERT (asn_mark_response_is_place (r));
+  return r->place_and_eta & 0xf;
+}
+
+static u8 * format_asn_mark_response (u8 * s, va_list * va)
+{
+  asn_mark_response_t * r = va_arg (*va, asn_mark_response_t *);
+  int is_place = asn_mark_response_is_place (r);
+
+  s = format (s, "user %U ", format_hex_bytes, r->user, sizeof (r->user));
+  if (is_place)
+    s = format (s, "place %U eta %d", format_hex_bytes, r->place, sizeof (r->place),
+		asn_mark_response_place_eta (r));
+  else
+    s = format (s, "location %.9f %.9f",
+		1e-6 * clib_net_to_host_i32 (r->longitude_mul_1e6),
+		1e-6 * clib_net_to_host_i32 (r->latitude_mul_1e6));
+  return s;
+}
+
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  u8 user_encrypt_key[crypto_box_public_key_bytes];
+} learn_user_from_auth_response_exec_ack_handler_t;
+
+static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  asn_main_t * am = ah->asn_main;
+  learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
+
+  if (n_bytes_ack_data != crypto_sign_public_key_bytes)
+    return clib_error_return (0, "expected 32 bytes asn/auth; received %d", n_bytes_ack_data);
+
+  if (am->verbose)
+    clib_warning ("encr %U auth %U",
+		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
+		  format_hex_bytes, ack->data, n_bytes_ack_data);
+
+  return 0;
+}
+
+static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  asn_mark_response_t * r = asn_pdu_contents_for_blob (blob);
+
+  if (am->verbose)
+    clib_warning ("%U", format_asn_mark_response, r);
+		
+  learn_user_from_auth_response_exec_ack_handler_t * lah = asn_exec_ack_handler_create_with_function_in_container
+    (learn_user_from_auth_response_ack,
+     sizeof (learn_user_from_auth_response_exec_ack_handler_t),
+     STRUCT_OFFSET_OF (learn_user_from_auth_response_exec_ack_handler_t, ack_handler));
+
+  memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
+
+  return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth", 0, format_hex_bytes, r->user, sizeof (r->user));
+}
+
+static clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude)
+{ return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, longitude, 0, latitude); }
 
 int test_asn_main (unformat_input_t * input)
 {
@@ -153,6 +238,8 @@ int test_asn_main (unformat_input_t * input)
           goto done;
       }
 
+    asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
+
     while (pool_elts (am->websocket_main.user_socket_pool) > (am->server_config ? 1 : 0))
       {
         am->unix_file_poller.poll_for_input (&am->unix_file_poller, /* timeout */ 10e-3);
@@ -192,14 +279,16 @@ int test_asn_main (unformat_input_t * input)
 		    if (now - tas->last_echo_time > dt)
 		      {
 			if (0) {
-			error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
-			if (error)
-			  clib_error_report (error);
+			  error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
+			  if (error)
+			    clib_error_report (error);
 			}
 
-			error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "mark%c37.7833%c122.4167", 0, 0);
-			if (error)
-			  clib_error_report (error);
+			if (1) {
+			  error = asn_mark_position (as, -37.1234567, 122.89012345);
+			  if (error)
+			    clib_error_report (error);
+			}
 
 			if (tas->last_echo_time == 0)
 			  tas->last_echo_time = now;
