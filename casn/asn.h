@@ -353,12 +353,25 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
 clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config);
 clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_random_keys);
 
-uword
-asn_main_new_user_with_type (asn_main_t * am,
-                             asn_rx_or_tx_t rt,
-                             asn_user_type_t with_user_type,
-                             asn_crypto_public_keys_t * with_public_keys,
-			     asn_crypto_private_keys_t * with_private_keys);
+always_inline asn_user_t *
+asn_user_with_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key)
+{
+  asn_known_users_t * ku = &am->known_users[rt];
+  uword * p;
+
+  if (pool_elts (ku->user_pool) > 0
+      && (p = hash_get_mem (ku->user_by_public_encrypt_key, encrypt_key)))
+    return pool_elt_at_index (ku->user_pool, p[0]);
+  else
+    return 0;
+}
+
+asn_user_t *
+asn_new_user_with_type (asn_main_t * am,
+			asn_rx_or_tx_t rt,
+			asn_user_type_t with_user_type,
+			asn_crypto_public_keys_t * with_public_keys,
+			asn_crypto_private_keys_t * with_private_keys);
 
 clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);

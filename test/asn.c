@@ -84,6 +84,26 @@ static u8 * format_asn_mark_response (u8 * s, va_list * va)
   return s;
 }
 
+asn_user_t *
+asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
+		      u8 * encrypt_key, u8 * auth_key)
+{
+  asn_user_t * au = asn_user_with_encrypt_key (am, rt, encrypt_key);
+  if (! au)
+    {
+      asn_crypto_public_keys_t pk;
+      memcpy (pk.encrypt_key, encrypt_key, sizeof (pk.encrypt_key));
+      memcpy (pk.auth_key, auth_key, sizeof (pk.auth_key));
+      au = asn_new_user_with_type (am, rt, user_type, &pk, /* private keys */ 0);
+    }
+
+  ASSERT (au->user_type == user_type);
+  if (auth_key)
+    memcpy (au->crypto_keys.public.auth_key, auth_key, sizeof (au->crypto_keys.public.auth_key));
+
+  return au;
+}
+
 typedef struct {
   asn_exec_ack_handler_t ack_handler;
   u8 user_encrypt_key[crypto_box_public_key_bytes];
@@ -101,6 +121,8 @@ static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t 
     clib_warning ("encr %U auth %U",
 		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
 		  format_hex_bytes, ack->data, n_bytes_ack_data);
+
+  asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack->data);
 
   return 0;
 }
@@ -223,9 +245,11 @@ int test_asn_main (unformat_input_t * input)
   if (tm->user_keys.private_encrypt_key)
     {
       asn_crypto_private_keys_t pk;
+      asn_user_t * au;
       memcpy (pk.encrypt_key, tm->user_keys.private_encrypt_key, vec_len (tm->user_keys.private_encrypt_key));
       memcpy (pk.auth_key, tm->user_keys.private_auth_key, vec_len (tm->user_keys.private_auth_key));
-      am->self_user_index = asn_main_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
+      au = asn_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
+      am->self_user_index = au->index;
     }
 
   {

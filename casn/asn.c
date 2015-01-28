@@ -98,24 +98,37 @@ asn_user_by_key_key_equal (hash_t * h, uword key1, uword key2)
   return 0 == memcmp (k1, k2, STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key));
 }
 
-uword
-asn_main_new_user_with_type (asn_main_t * am,
-                             asn_rx_or_tx_t rt,
-                             asn_user_type_t with_user_type,
-                             asn_crypto_public_keys_t * with_public_keys,
-			     asn_crypto_private_keys_t * with_private_keys)
+asn_user_t *
+asn_new_user_with_type (asn_main_t * am,
+			asn_rx_or_tx_t rt,
+			asn_user_type_t with_user_type,
+			asn_crypto_public_keys_t * with_public_keys,
+			asn_crypto_private_keys_t * with_private_keys)
 {
   asn_user_t * au;
   asn_known_users_t * ku = &am->known_users[rt];
   asn_crypto_keys_t * k;
+  uword * p;
 
   /* See if user already exists. */
-  if (with_public_keys)
+  if (with_public_keys
+      && pool_elts (ku->user_pool) > 0
+      && (p = hash_get_mem (ku->user_by_public_encrypt_key, with_public_keys->encrypt_key)))
     {
+      au = pool_elt_at_index (ku->user_pool, p[0]);
+
+      /* Update user type & auth key since they may change. */
+      au->user_type = with_user_type;
+      memcpy (au->crypto_keys.public.auth_key, with_public_keys->auth_key, sizeof (with_public_keys->auth_key));
+
+      return au;
+    }
+  else
+    {
+      pool_get (ku->user_pool, au);
+      au->index = au - ku->user_pool;
     }
 
-  pool_get (ku->user_pool, au);
-  au->index = au - ku->user_pool;
   au->user_type = with_user_type;
   k = &au->crypto_keys;
 
@@ -154,7 +167,7 @@ asn_main_new_user_with_type (asn_main_t * am,
 
   hash_set (ku->user_by_public_encrypt_key, 1 + 2*au->index, au->index);
 
-  return au - ku->user_pool;
+  return au;
 }
 
 u8 * format_asn_user_type (u8 * s, va_list * va)
@@ -898,15 +911,13 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
     u8 private_encrypt_key[crypto_box_private_key_bytes];
     u8 private_auth_key[crypto_sign_private_key_bytes];
   } * keys = (void *) ack->data;
-  u32 ui;
   asn_crypto_private_keys_t pk;
   asn_user_t * au;
 
   memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
   memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
 
-  ui = asn_main_new_user_with_type (am, ASN_TX, nah->user_type, /* with_public_keys */ 0, &pk);
-  au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, ui);
+  au = asn_new_user_with_type (am, ASN_TX, nah->user_type, /* with_public_keys */ 0, &pk);
 
   if (am->verbose)
     clib_warning ("newuser type %U, keys %U %U",
@@ -915,7 +926,7 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
 		  format_hex_bytes, au->crypto_keys.private.auth_key, sizeof (au->crypto_keys.private.auth_key));
 
   if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-    am->self_user_index = ui;
+    am->self_user_index = au->index;
 
   return 0;
 }
