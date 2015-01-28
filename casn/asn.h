@@ -174,6 +174,13 @@ asn_pdu_contents_for_blob (asn_pdu_blob_t * b)
   return b->name + b->n_name_bytes;
 }
 
+always_inline uword
+asn_pdu_n_content_bytes_for_blob (asn_pdu_blob_t * b, u32 n_bytes_in_pdu)
+{
+  ASSERT (n_bytes_in_pdu >= sizeof (b[0]) + b->n_name_bytes);
+  return n_bytes_in_pdu - sizeof (b[0]) - b->n_name_bytes;
+}
+
 #define foreach_asn_user_type \
   _ (unspecified) _ (actual) _ (forum) _ (bridge) _ (place)
 

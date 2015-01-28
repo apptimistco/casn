@@ -147,6 +147,12 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
 static clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude)
 { return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, longitude, 0, latitude); }
 
+static clib_error_t * unnamed_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  clib_warning ("%*s", asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu), asn_pdu_contents_for_blob (blob));
+  return 0;
+}
+
 int test_asn_main (unformat_input_t * input)
 {
   test_asn_main_t _tm, * tm = &_tm;
@@ -263,6 +269,7 @@ int test_asn_main (unformat_input_t * input)
       }
 
     asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
+    asn_set_blob_handler_for_name (am, unnamed_blob_handler, "");
 
     while (pool_elts (am->websocket_main.user_socket_pool) > (am->server_config ? 1 : 0))
       {
@@ -312,6 +319,26 @@ int test_asn_main (unformat_input_t * input)
 			  error = asn_mark_position (as, -37.1234567, 122.89012345);
 			  if (error)
 			    clib_error_report (error);
+			}
+
+			if (1) {
+			  uword ui;
+			  asn_user_t * user_pool = am->known_users[ASN_TX].user_pool;
+			  vec_foreach_index (ui, user_pool)
+			    {
+			      asn_user_t * au = user_pool + ui;
+			      if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_index)
+				{
+				  static int oingoes;
+				  error = asn_exec (as, 0, "blob%c~%U%c-%c%chello %d",
+						    0,
+						    format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
+						    0, 0, 0,
+						    oingoes++);
+				  if (error)
+				    clib_error_report (error);
+				}
+			    }
 			}
 
 			if (tas->last_echo_time == 0)
