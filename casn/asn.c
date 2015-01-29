@@ -402,7 +402,6 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
 static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, va_list * va)
 {
   u8 * s = va_format (0, fmt, va);
-
   asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
   memcpy (h->data, s, vec_len (s));
   vec_free (s);
@@ -1130,6 +1129,93 @@ clib_error_t * asn_poll_for_input (asn_main_t * am)
   return error;
 }
 
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  u8 user_encrypt_key[crypto_box_public_key_bytes];
+  asn_user_mark_response_t mark_response;
+} learn_user_from_auth_response_exec_ack_handler_t;
+
+static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  clib_error_t * error = 0;
+  struct {
+    u8 auth_public_key[32];
+    u8 user_type[0];
+  } * ack_data = (void *) ack->data;
+  asn_main_t * am = ah->asn_main;
+  learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
+  asn_user_t * au;
+  asn_user_type_t user_type;
+
+  if (n_bytes_ack_data < sizeof (ack_data[0]))
+    {
+      error = clib_error_return (0, "expected at least %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
+      goto done;
+    }
+
+  user_type = asn_user_type_from_string (am, ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
+  if (user_type == ASN_USER_TYPE_unknown)
+    {
+      error = clib_error_return (0, "unknown user type `%*s'", ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
+      goto done;
+    }
+
+  if (am->verbose)
+    clib_warning ("type %U, encr %U, auth %U",
+		  format_asn_user_type, user_type,
+		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
+		  format_hex_bytes, ack_data->auth_public_key, sizeof (ack_data->auth_public_key));
+
+  {
+    asn_user_mark_response_t * mr = &lah->mark_response;
+    uword is_place = asn_user_mark_response_is_place (mr);
+    au = asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
+    au->current_marks_are_valid |= 1 << is_place;
+    au->current_marks[is_place] = mr[0];
+  }
+
+ done:
+  return error;
+}
+
+static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  clib_error_t * error = 0;
+  asn_user_mark_response_t * r = asn_pdu_contents_for_blob (blob);
+  asn_user_t * au;
+
+  if (am->verbose)
+    clib_warning ("%U", format_asn_user_mark_response, r);
+		
+  /* If user exists just update most current mark. */
+  au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+  if (au)
+    {
+      uword is_place = asn_user_mark_response_is_place (r);
+      au->current_marks_are_valid |= 1 << is_place;
+      au->current_marks[is_place] = r[0];
+      return error;
+    }
+
+  learn_user_from_auth_response_exec_ack_handler_t * lah = asn_exec_ack_handler_create_with_function_in_container
+    (learn_user_from_auth_response_ack,
+     sizeof (learn_user_from_auth_response_exec_ack_handler_t),
+     STRUCT_OFFSET_OF (learn_user_from_auth_response_exec_ack_handler_t, ack_handler));
+
+  memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
+  lah->mark_response = r[0];
+
+  /* Ask for concatenation of user's asn/auth + asn/user. */
+  return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
+				    0,
+				    format_hex_bytes, r->user, sizeof (r->user),
+				    0,
+				    format_hex_bytes, r->user, sizeof (r->user));
+}
+
+clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude)
+{ return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, longitude, 0, latitude); }
+
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket)
 {
   clib_error_t * error = 0;
@@ -1145,6 +1231,8 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
   wsm->did_receive_handshake = asn_main_did_receive_handshake;
 
   error = websocket_init (wsm);
+
+  asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
 
   return error;
 }

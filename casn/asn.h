@@ -465,6 +465,8 @@ clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am);
 
+clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude);
+
 format_function_t format_asn_user_type, format_asn_user_mark_response;
 
 #endif /* included_asn_h */
