@@ -259,8 +259,6 @@ int test_asn_main (unformat_input_t * input)
 	    {
 	      if (now > cs->timestamps.next_connect_attempt)
 		{
-		  if (am->verbose)
-		    clib_warning ("re-trying connection to %s, backoff %.4f", am->client_config, cs->timestamps.backoff);
 		  error = asn_add_connection (am, am->client_config, cs - am->client_sockets);
 		  if (error)
 		    goto done;
