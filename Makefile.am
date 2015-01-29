@@ -9,5 +9,5 @@ nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
 
 bin_PROGRAMS = asntest
 
-asntest_SOURCES = test/asn.c
+asntest_SOURCES = test/asntest.c
 asntest_LDADD = libcasn.a -luclib

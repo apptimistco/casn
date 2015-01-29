@@ -135,7 +135,7 @@ am_libcasn_a_OBJECTS = casn/asn_app.$(OBJEXT) casn/asn.$(OBJEXT) \
 	casn/tweetnacl.$(OBJEXT)
 libcasn_a_OBJECTS = $(am_libcasn_a_OBJECTS)
 PROGRAMS = $(bin_PROGRAMS)
-am_asntest_OBJECTS = test/asn.$(OBJEXT)
+am_asntest_OBJECTS = test/asntest.$(OBJEXT)
 asntest_OBJECTS = $(am_asntest_OBJECTS)
 asntest_DEPENDENCIES = libcasn.a
 AM_V_P = $(am__v_P_@AM_V@)
@@ -302,7 +302,7 @@ AM_CFLAGS = -Wall
 lib_LIBRARIES = libcasn.a
 libcasn_a_SOURCES = casn/asn_app.c casn/asn.c casn/tweetnacl.c
 nobase_include_HEADERS = $(wildcard $(srcdir)/casn/*.h)
-asntest_SOURCES = test/asn.c
+asntest_SOURCES = test/asntest.c
 asntest_LDADD = libcasn.a -luclib
 all: all-am
 
@@ -438,7 +438,7 @@ test/$(am__dirstamp):
 test/$(DEPDIR)/$(am__dirstamp):
 	@$(MKDIR_P) test/$(DEPDIR)
 	@: > test/$(DEPDIR)/$(am__dirstamp)
-test/asn.$(OBJEXT): test/$(am__dirstamp) \
+test/asntest.$(OBJEXT): test/$(am__dirstamp) \
 	test/$(DEPDIR)/$(am__dirstamp)
 
 asntest$(EXEEXT): $(asntest_OBJECTS) $(asntest_DEPENDENCIES) $(EXTRA_asntest_DEPENDENCIES) 
@@ -456,7 +456,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/asn.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/asn_app.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@casn/$(DEPDIR)/tweetnacl.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@test/$(DEPDIR)/asn.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@test/$(DEPDIR)/asntest.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\

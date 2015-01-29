@@ -226,7 +226,7 @@ int test_asn_main (unformat_input_t * input)
 
     for (i = 0; i < tm->n_clients; i++)
       {
-        error = asn_add_connection (am, am->client_config);
+        error = asn_add_connection (am, am->client_config, /* client_socket_index */ ~0);
         if (error)
           goto done;
       }
@@ -237,105 +237,117 @@ int test_asn_main (unformat_input_t * input)
 
   clib_mem_trace (0);
 
-  while (pool_elts (am->websocket_main.user_socket_pool) > (am->server_config ? 1 : 0))
+  while (1)
     {
       am->unix_file_poller.poll_for_input (&am->unix_file_poller, /* timeout */ 10e-3);
 
-      test_asn_socket_t * as_pool = am->websocket_main.user_socket_pool;
       test_asn_socket_t * tas;
       asn_socket_t * as;
+      asn_client_socket_t * cs;
       websocket_socket_t * ws;
       f64 now;
-      uword i;
 
       websocket_close_all_sockets_with_no_handshake (wsm);
 
       now = unix_time_now ();
 
-      vec_foreach_index (i, as_pool)
+      vec_foreach (cs, am->client_sockets)
 	{
-	  if (pool_is_free_index (as_pool, i))
-	    continue;
-	  tas = pool_elt_at_index (as_pool, i);
+	  test_asn_socket_t * as_pool = am->websocket_main.user_socket_pool;
+
+	  if (cs->socket_index == ~0)
+	    {
+	      if (now > cs->timestamps.next_connect_attempt)
+		{
+		  if (am->verbose)
+		    clib_warning ("re-trying connection to %s, backoff %.4f", am->client_config, cs->timestamps.backoff);
+		  error = asn_add_connection (am, am->client_config, cs - am->client_sockets);
+		  if (error)
+		    goto done;
+		}
+	      continue;
+	    }
+
+	  tas = pool_elt_at_index (as_pool, cs->socket_index);
 	  as = &tas->asn_socket;
 	  ws = &as->websocket_socket;
 
-	  if (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client
-	      && ws->handshake_rx)
+	  ASSERT (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client);
+	  if (! ws->handshake_rx)
+	    continue;
+
+	  switch (as->session_state)
 	    {
-	      switch (as->session_state)
+	    case ASN_SESSION_STATE_opened:
+	      error = asn_login_for_self_user (am, as);
+	      if (error)
+		clib_error_report (error);
+	      break;
+
+	    case ASN_SESSION_STATE_established: {
+	      if (now - tas->last_echo_time > tm->time_interval_between_echos)
 		{
-		case ASN_SESSION_STATE_opened:
-		  error = asn_login_for_self_user (am, as);
-		  if (error)
-		    clib_error_report (error);
-		  break;
+		  if (0) {
+		    error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
+		    if (error)
+		      clib_error_report (error);
+		  }
 
-		case ASN_SESSION_STATE_established: {
-		  if (now - tas->last_echo_time > tm->time_interval_between_echos)
-		    {
-		      if (0) {
-			error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
-			if (error)
-			  clib_error_report (error);
-		      }
+		  if (1) {
+		    error = asn_mark_position (as, -37.1234567, 122.89012345);
+		    if (error)
+		      clib_error_report (error);
+		  }
 
-		      if (1) {
-			error = asn_mark_position (as, -37.1234567, 122.89012345);
-			if (error)
-			  clib_error_report (error);
-		      }
-
-		      if (1) {
-			uword ui;
-			asn_user_t * user_pool = am->known_users[ASN_TX].user_pool;
-			vec_foreach_index (ui, user_pool)
+		  if (1) {
+		    uword ui;
+		    asn_user_t * user_pool = am->known_users[ASN_TX].user_pool;
+		    vec_foreach_index (ui, user_pool)
+		      {
+			asn_user_t * au = user_pool + ui;
+			if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_index)
 			  {
-			    asn_user_t * au = user_pool + ui;
-			    if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_index)
-			      {
-				static int oingoes;
-				error = asn_exec (as, 0, "blob%c~%U%c-%c%chello %d",
-						  0,
-						  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
-						  0, 0, 0,
-						  oingoes++);
-				if (error)
-				  clib_error_report (error);
-			      }
+			    static int oingoes;
+			    error = asn_exec (as, 0, "blob%c~%U%c-%c%chello %d",
+					      0,
+					      format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
+					      0, 0, 0,
+					      oingoes++);
+			    if (error)
+			      clib_error_report (error);
 			  }
 		      }
-
-		      if (am->verbose)
-			clib_warning ("%U", format_clib_mem_usage, /* verbose */ 0);
-
-		      if (tas->last_echo_time == 0)
-			tas->last_echo_time = now;
-		      else
-			tas->last_echo_time += tm->time_interval_between_echos;
-		    }
-
-		  if (0) {
-		    clib_error_t * error;
-		    error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "blob%cfart%c-%c%ccontents of fart",
-				      0, 0, 0, 0);
-		    if (error)
-		      clib_error_report (error);
 		  }
 
-		  if (0) {
-		    clib_error_t * error;
-		    error = asn_exec (as, asn_socket_exec_cat_blob_ack_handler, "cat%cfart", 0);
-		    if (error)
-		      clib_error_report (error);
-		  }
+		  if (am->verbose)
+		    clib_warning ("%U", format_clib_mem_usage, /* verbose */ 0);
 
-		  break;
+		  if (tas->last_echo_time == 0)
+		    tas->last_echo_time = now;
+		  else
+		    tas->last_echo_time += tm->time_interval_between_echos;
 		}
 
-		default:
-		  break;
-		}
+	      if (0) {
+		clib_error_t * error;
+		error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "blob%cfart%c-%c%ccontents of fart",
+				  0, 0, 0, 0);
+		if (error)
+		  clib_error_report (error);
+	      }
+
+	      if (0) {
+		clib_error_t * error;
+		error = asn_exec (as, asn_socket_exec_cat_blob_ack_handler, "cat%cfart", 0);
+		if (error)
+		  clib_error_report (error);
+	      }
+
+	      break;
+	    }
+
+	    default:
+	      break;
 	    }
 	}
     }

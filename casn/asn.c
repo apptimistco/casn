@@ -263,7 +263,7 @@ asn_pdu_sync_overflow (asn_pdu_t * p)
   vec_reset_length (p->overflow_data);
 }
 
-static void *
+void *
 asn_socket_tx_add (asn_socket_t * as, u32 n_bytes, uword want_new_pdu)
 {
   asn_pdu_t * p;
@@ -863,6 +863,11 @@ asn_main_did_receive_handshake (websocket_main_t * wsm, websocket_socket_t * ws)
 
       if (am->verbose)
 	clib_warning ("handshake received; ephemeral sent %U", format_hex_bytes, ek->public, sizeof (ek->public));
+
+      {
+	asn_client_socket_t * cs = vec_elt_at_index (am->client_sockets, as->client_socket_index);
+	cs->timestamps.first_close = 0;
+      }
     }
 
  done:
@@ -883,9 +888,34 @@ static void asn_main_connection_will_close (websocket_main_t * wsm, websocket_so
       else
         clib_warning ("closing end-of-file");
     }
+
+  if (as->client_socket_index < vec_len (am->client_sockets))
+    {
+      asn_client_socket_t * cs = &am->client_sockets[as->client_socket_index];
+
+      cs->socket_index = ~0;
+
+      if (cs->timestamps.first_close < cs->timestamps.open)
+	cs->timestamps.first_close = unix_time_now ();
+
+      {
+	f64 backoff_min_time = 1;
+	f64 backoff_max_time = 15;
+	f64 backoff_expon = 1.5;
+
+	if (cs->timestamps.backoff == 0)
+	  cs->timestamps.backoff = backoff_min_time;
+	else
+	  cs->timestamps.backoff *= backoff_expon;
+	if (cs->timestamps.backoff > backoff_max_time)
+	  cs->timestamps.backoff = backoff_max_time;
+
+	cs->timestamps.next_connect_attempt = cs->timestamps.first_close + cs->timestamps.backoff;
+      }
+    }
 }
 
-clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config)
+clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index)
 {
   websocket_main_t * wsm = &am->websocket_main;
   websocket_socket_t * ws;
@@ -898,22 +928,24 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config)
 
   as = CONTAINER_OF (ws, asn_socket_t, websocket_socket);
 
-  {
-    asn_crypto_ephemeral_keys_t ek;
-
-    if (1)
-      crypto_box_keypair (ek.public, ek.private, /* want_random */ 1);
-    else
-      {
-	/* Zero key for testing. */
-	memset (ek.private, 0, sizeof (ek.private));
-	crypto_box_keypair (ek.public, ek.private, /* want_random */ 0);
-      }
-
-    as->ephemeral_keys = ek;
-  }
+  crypto_box_keypair (as->ephemeral_keys.public, as->ephemeral_keys.private, /* want_random */ 1);
 
   asn_socket_crypto_set_peer (as, am->server_keys.public.encrypt_key, am->server_nonce);
+
+  {
+    asn_client_socket_t * cs;
+
+    if (client_socket_index == ~0)
+      vec_add2 (am->client_sockets, cs, 1);
+    else
+      cs = vec_elt_at_index (am->client_sockets, client_socket_index);
+
+    as->client_socket_index = cs - am->client_sockets;
+    cs->socket_index = ws->index;
+    cs->socket_type = ASN_SOCKET_TYPE_websocket;
+    cs->timestamps.open = unix_time_now ();
+    cs->timestamps.first_close = 0;
+  }
 
   return error;
 }
@@ -922,6 +954,7 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
 {
   websocket_main_t * wsm = &am->websocket_main;
   websocket_socket_t * ws;
+  asn_socket_t * as;
   clib_error_t * error = 0;
 
   error = websocket_server_add_listener (wsm, (char *) socket_config, &ws);
@@ -933,6 +966,9 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
 
   ASSERT (want_random_keys);
   asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private, want_random_keys);
+
+  as = CONTAINER_OF (ws, asn_socket_t, websocket_socket);
+  as->client_socket_index = ~0;
 
   return error;
 }
@@ -983,7 +1019,7 @@ clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
 	 sizeof (nah[0]),
 	 STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
       nah->user_type = ASN_USER_TYPE_actual;
-      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b", 0);
+      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%cactual", 0, 0);
       as->unknown_self_user_newuser_in_progress = error == 0;
     }
   else if (! self_user_is_unknown && ! as->self_user_login_in_progress)

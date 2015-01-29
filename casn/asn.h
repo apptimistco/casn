@@ -337,6 +337,8 @@ typedef struct asn_socket_t {
 
   asn_session_state_t session_state;
 
+  u32 client_socket_index;
+
   u32 unknown_self_user_newuser_in_progress : 1;
   u32 self_user_login_in_progress : 1;
 } asn_socket_t;
@@ -365,6 +367,25 @@ typedef struct {
   u8 * name;
 } asn_blob_handler_t;
 
+typedef enum {
+#define foreach_asn_socket_type _ (websocket) _ (tcp)
+#define _(f) ASN_SOCKET_TYPE_##f,
+  foreach_asn_socket_type
+#undef _
+  ASN_N_SOCKET_TYPE,
+} asn_socket_type_t;
+
+typedef struct {
+  /* Index in pool. */
+  u32 socket_index;
+
+  asn_socket_type_t socket_type;
+
+  struct {
+    f64 open, first_close, next_connect_attempt, backoff;
+  } timestamps;
+} asn_client_socket_t;
+
 typedef struct asn_main_t {
   websocket_main_t websocket_main;
 
@@ -377,6 +398,8 @@ typedef struct asn_main_t {
   u8 server_nonce[crypto_box_nonce_bytes];
 
   u8 * client_config;
+
+  asn_client_socket_t * client_sockets;
 
   u32 verbose;
 
@@ -393,7 +416,7 @@ typedef struct asn_main_t {
 } asn_main_t;
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket);
-clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config);
+clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index);
 clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_random_keys);
 
 always_inline asn_user_t *
