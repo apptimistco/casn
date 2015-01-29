@@ -1064,6 +1064,54 @@ void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t
   hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
 }
 
+clib_error_t * asn_poll_for_input (asn_main_t * am)
+{
+  clib_error_t * error = 0;
+  asn_socket_t * as;
+  asn_client_socket_t * cs;
+  websocket_socket_t * ws;
+  f64 now;
+
+  am->unix_file_poller.poll_for_input (&am->unix_file_poller, /* timeout */ 10e-3);
+
+  websocket_close_all_sockets_with_no_handshake (&am->websocket_main);
+
+  now = unix_time_now ();
+
+  /* Retry any connections that are ready. */
+  vec_foreach (cs, am->client_sockets)
+    {
+      if (cs->socket_index == ~0)
+	{
+	  if (now > cs->timestamps.next_connect_attempt)
+	    {
+	      error = asn_add_connection (am, am->client_config, cs - am->client_sockets);
+	      if (error)
+		goto done;
+	    }
+
+	  continue;
+	}
+
+      as = asn_socket_at_index (am, cs->socket_index);
+      ws = &as->websocket_socket;
+
+      ASSERT (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client);
+      if (! ws->handshake_rx)
+	goto done;
+
+      if (as->session_state == ASN_SESSION_STATE_opened)
+	{
+	  error = asn_login_for_self_user (am, as);
+	  if (error)
+	    goto done;
+	}
+    }
+
+ done:
+  return error;
+}
+
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket)
 {
   clib_error_t * error = 0;

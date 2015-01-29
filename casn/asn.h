@@ -415,6 +415,13 @@ typedef struct asn_main_t {
   uword * blob_handler_index_by_name;
 } asn_main_t;
 
+always_inline asn_socket_t *
+asn_socket_at_index (asn_main_t * am, u32 i)
+{
+  websocket_socket_t * ws = websocket_at_index (&am->websocket_main, i);
+  return CONTAINER_OF (ws, asn_socket_t, websocket_socket);
+}
+
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket);
 clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index);
 clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_random_keys);
@@ -449,6 +456,7 @@ clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * fu
 clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
+clib_error_t * asn_poll_for_input (asn_main_t * am);
 
 format_function_t format_asn_user_type, format_asn_user_mark_response;
 
