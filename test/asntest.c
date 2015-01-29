@@ -10,6 +10,9 @@ typedef struct {
 typedef struct {
   asn_main_t asn_main;
   
+  u8 * client_config;
+  u8 * server_config;
+
   struct {
     u8 * public_encrypt_key;
     u8 * public_auth_key;
@@ -138,6 +141,7 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
   lah->mark_response = r[0];
 
+  /* Ask for concatenation of user's asn/auth + asn/user. */
   return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
 				    0,
 				    format_hex_bytes, r->user, sizeof (r->user),
@@ -173,7 +177,7 @@ int test_asn_main (unformat_input_t * input)
     {
       if (unformat (input, "listen %s", &am->server_config))
         ;
-      else if (unformat (input, "connect %s", &am->client_config))
+      else if (unformat (input, "connect %s", &tm->client_config))
         ;
       else if (unformat (input, "n-clients %d", &tm->n_clients))
         ;
@@ -216,10 +220,10 @@ int test_asn_main (unformat_input_t * input)
         }
     }
 
-  if (! am->client_config)
-    am->client_config = am->server_config;
+  if (! tm->client_config)
+    tm->client_config = tm->server_config;
 
-  if (! am->client_config)
+  if (! tm->client_config)
     clib_error ("must specify either server-config or client-config");
 
   error = asn_main_init (am, sizeof (test_asn_socket_t), STRUCT_OFFSET_OF (test_asn_socket_t, asn_socket));
@@ -273,7 +277,7 @@ int test_asn_main (unformat_input_t * input)
 
     for (i = 0; i < tm->n_clients; i++)
       {
-        error = asn_add_connection (am, am->client_config, /* client_socket_index */ ~0);
+        error = asn_add_connection (am, tm->client_config, /* client_socket_index */ ~0);
         if (error)
           goto done;
       }

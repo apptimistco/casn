@@ -384,7 +384,13 @@ typedef struct {
   struct {
     f64 open, first_close, next_connect_attempt, backoff;
   } timestamps;
+
+  u8 * socket_config;
 } asn_client_socket_t;
+
+always_inline void
+asn_client_socket_free (asn_client_socket_t * s)
+{ vec_free (s->socket_config); }
 
 typedef struct asn_main_t {
   websocket_main_t websocket_main;
@@ -396,8 +402,6 @@ typedef struct asn_main_t {
 
   asn_crypto_keys_t server_keys;
   u8 server_nonce[crypto_box_nonce_bytes];
-
-  u8 * client_config;
 
   asn_client_socket_t * client_sockets;
 

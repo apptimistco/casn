@@ -944,6 +944,7 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
 
     as->client_socket_index = cs - am->client_sockets;
     cs->socket_index = ws->index;
+    cs->socket_config = format (0, "%s", socket_config);
     cs->socket_type = ASN_SOCKET_TYPE_websocket;
     if (is_first_connection_attempt)
       cs->timestamps.open = unix_time_now ();
@@ -952,11 +953,11 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
       {
 	f64 now = unix_time_now ();
 	if (is_first_connection_attempt)
-	  clib_warning ("%U: trying connection to %s", format_time_float, 0, now, am->client_config);
+	  clib_warning ("%U: trying connection to %s", format_time_float, 0, now, cs->socket_config);
 	else
 	  clib_warning ("%U: re-trying connection to %s, backoff %.4f",
 			format_time_float, 0, now, 
-			am->client_config, cs->timestamps.backoff);
+			cs->socket_config, cs->timestamps.backoff);
       }
   }
 
@@ -973,9 +974,6 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
   error = websocket_server_add_listener (wsm, (char *) socket_config, &ws);
   if (error)
     return error;
-
-  if (! am->client_config)
-    am->client_config = format (0, "%U%c", format_sockaddr, &ws->clib_socket.self_addr, 0);
 
   ASSERT (want_random_keys);
   asn_crypto_create_keys (&am->server_keys.public, &am->server_keys.private, want_random_keys);
@@ -1085,7 +1083,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am)
 	{
 	  if (now > cs->timestamps.next_connect_attempt)
 	    {
-	      error = asn_add_connection (am, am->client_config, cs - am->client_sockets);
+	      error = asn_add_connection (am, cs->socket_config, cs - am->client_sockets);
 	      if (error)
 		goto done;
 	    }
