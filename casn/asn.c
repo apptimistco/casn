@@ -1009,10 +1009,10 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   au = asn_new_user_with_type (am, ASN_TX, nah->user_type, /* with_public_keys */ 0, &pk);
 
   if (am->verbose)
-    clib_warning ("newuser type %U, keys %U %U",
+    clib_warning ("newuser type %U, user-keys %U %U",
 		  format_asn_user_type, nah->user_type,
 		  format_hex_bytes, au->crypto_keys.private.encrypt_key, sizeof (au->crypto_keys.private.encrypt_key),
-		  format_hex_bytes, au->crypto_keys.private.auth_key, sizeof (au->crypto_keys.private.auth_key));
+		  format_hex_bytes, au->crypto_keys.private.auth_key, 32);
 
   if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
     am->self_user_index = au->index;

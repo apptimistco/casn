@@ -182,7 +182,7 @@ asn_pdu_n_content_bytes_for_blob (asn_pdu_blob_t * b, u32 n_bytes_in_pdu)
 }
 
 #define foreach_asn_user_type \
-  _ (unspecified) _ (actual) _ (forum) _ (bridge) _ (place)
+  _ (unknown) _ (actual) _ (forum) _ (bridge) _ (place)
 
 typedef enum {
 #define _(f) ASN_USER_TYPE_##f,
@@ -407,6 +407,8 @@ typedef struct asn_main_t {
   u32 self_user_index;
 
   asn_known_users_t known_users[ASN_N_RX_TX];
+
+  uword * asn_user_type_by_name;
 
   u8 * blob_name_vector_for_reuse;
 

@@ -42,6 +42,26 @@ static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handle
   return 0;
 }
 
+static asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string)
+{
+  u8 * user_type_as_vector = 0;
+  uword * p;
+
+  if (! am->asn_user_type_by_name)
+    {
+      am->asn_user_type_by_name = hash_create_string (0, sizeof (uword));
+#define _(f) hash_set_mem (am->asn_user_type_by_name, #f, ASN_USER_TYPE_##f);
+      foreach_asn_user_type;
+#undef _
+    }
+
+  vec_add (user_type_as_vector, type_string, n_bytes_in_type_string);
+  vec_add1 (user_type_as_vector, 0);
+  p = hash_get_mem (am->asn_user_type_by_name, user_type_as_vector);
+  vec_free (user_type_as_vector);
+  return p ? p[0] : ASN_USER_TYPE_unknown;
+}
+
 typedef struct {
   asn_exec_ack_handler_t ack_handler;
   u8 user_encrypt_key[crypto_box_public_key_bytes];
@@ -50,27 +70,45 @@ typedef struct {
 
 static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
+  clib_error_t * error = 0;
+  struct {
+    u8 auth_public_key[32];
+    u8 user_type[0];
+  } * ack_data = (void *) ack->data;
   asn_main_t * am = ah->asn_main;
   learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
   asn_user_t * au;
+  asn_user_type_t user_type;
 
-  if (n_bytes_ack_data != crypto_sign_public_key_bytes)
-    return clib_error_return (0, "expected 32 bytes asn/auth; received %d", n_bytes_ack_data);
+  if (n_bytes_ack_data < sizeof (ack_data[0]))
+    {
+      error = clib_error_return (0, "expected at least %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
+      goto done;
+    }
+
+  user_type = asn_user_type_from_string (am, ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
+  if (user_type == ASN_USER_TYPE_unknown)
+    {
+      error = clib_error_return (0, "unknown user type `%*s'", ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
+      goto done;
+    }
 
   if (am->verbose)
-    clib_warning ("encr %U auth %U",
+    clib_warning ("type %U, encr %U, auth %U",
+		  format_asn_user_type, user_type,
 		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
-		  format_hex_bytes, ack->data, n_bytes_ack_data);
+		  format_hex_bytes, ack_data->auth_public_key, sizeof (ack_data->auth_public_key));
 
   {
     asn_user_mark_response_t * mr = &lah->mark_response;
     uword is_place = asn_user_mark_response_is_place (mr);
-    au = asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack->data);
+    au = asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
     au->current_marks_are_valid |= 1 << is_place;
     au->current_marks[is_place] = mr[0];
   }
 
-  return 0;
+ done:
+  return error;
 }
 
 static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
@@ -100,7 +138,11 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
   lah->mark_response = r[0];
 
-  return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth", 0, format_hex_bytes, r->user, sizeof (r->user));
+  return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
+				    0,
+				    format_hex_bytes, r->user, sizeof (r->user),
+				    0,
+				    format_hex_bytes, r->user, sizeof (r->user));
 }
 
 static clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude)
@@ -221,6 +263,11 @@ int test_asn_main (unformat_input_t * input)
       am->self_user_index = au->index;
     }
 
+  asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
+
+  /* Unnamed "message" blobs. */
+  asn_set_blob_handler_for_name (am, unnamed_blob_handler, "");
+
   {
     int i;
 
@@ -231,9 +278,6 @@ int test_asn_main (unformat_input_t * input)
           goto done;
       }
   }
-
-  asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
-  asn_set_blob_handler_for_name (am, unnamed_blob_handler, "");
 
   clib_mem_trace (0);
 
