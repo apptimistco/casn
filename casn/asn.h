@@ -445,6 +445,7 @@ asn_user_with_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key)
     return 0;
 }
 
+asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string);
 asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,

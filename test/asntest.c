@@ -29,40 +29,11 @@ typedef struct {
   f64 time_interval_between_echos;
 } test_asn_main_t;
 
-static clib_error_t * asn_socket_exec_cat_blob_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
-{
-  if (n_bytes_ack_data > 0)
-    clib_warning ("%*s", n_bytes_ack_data, ack->data);
-  else
-    clib_warning ("empty");
-  return 0;
-}
-
 static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   if (n_bytes_ack_data > 1)
     clib_warning ("%*s", n_bytes_ack_data - (ack->data[n_bytes_ack_data - 1] == '\n'), ack->data);
   return 0;
-}
-
-static asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string)
-{
-  u8 * user_type_as_vector = 0;
-  uword * p;
-
-  if (! am->asn_user_type_by_name)
-    {
-      am->asn_user_type_by_name = hash_create_string (0, sizeof (uword));
-#define _(f) hash_set_mem (am->asn_user_type_by_name, #f, ASN_USER_TYPE_##f);
-      foreach_asn_user_type;
-#undef _
-    }
-
-  vec_add (user_type_as_vector, type_string, n_bytes_in_type_string);
-  vec_add1 (user_type_as_vector, 0);
-  p = hash_get_mem (am->asn_user_type_by_name, user_type_as_vector);
-  vec_free (user_type_as_vector);
-  return p ? p[0] : ASN_USER_TYPE_unknown;
 }
 
 typedef struct {
@@ -356,13 +327,6 @@ int test_asn_main (unformat_input_t * input)
 	    clib_error_t * error;
 	    error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "blob%cfart%c-%c%ccontents of fart",
 			      0, 0, 0, 0);
-	    if (error)
-	      clib_error_report (error);
-	  }
-
-	  if (0) {
-	    clib_error_t * error;
-	    error = asn_exec (as, asn_socket_exec_cat_blob_ack_handler, "cat%cfart", 0);
 	    if (error)
 	      clib_error_report (error);
 	  }

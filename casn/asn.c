@@ -209,6 +209,26 @@ u8 * format_asn_user_type (u8 * s, va_list * va)
   return s;
 }
 
+asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string)
+{
+  u8 * user_type_as_vector = 0;
+  uword * p;
+
+  if (! am->asn_user_type_by_name)
+    {
+      am->asn_user_type_by_name = hash_create_string (0, sizeof (uword));
+#define _(f) hash_set_mem (am->asn_user_type_by_name, #f, ASN_USER_TYPE_##f);
+      foreach_asn_user_type;
+#undef _
+    }
+
+  vec_add (user_type_as_vector, type_string, n_bytes_in_type_string);
+  vec_add1 (user_type_as_vector, 0);
+  p = hash_get_mem (am->asn_user_type_by_name, user_type_as_vector);
+  vec_free (user_type_as_vector);
+  return p ? p[0] : ASN_USER_TYPE_unknown;
+}
+
 u8 * format_asn_user_mark_response (u8 * s, va_list * va)
 {
   asn_user_mark_response_t * r = va_arg (*va, asn_user_mark_response_t *);
