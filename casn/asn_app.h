@@ -2,22 +2,7 @@
 #define included_asn_app_h
 
 #include <uclib/uclib.h>
-
-/* ASN blobs are named by their 64 byte SHA-512 sum. */
-typedef struct {
-  u8 sum[64];
-} asn_blob_id_t;
-
-typedef struct {
-  u8 public_key[32];
-} asn_user_id_t;
-
-typedef struct {
-  /* Service key for public blobs; otherwise user's public key. */
-  asn_user_id_t user;
-
-  asn_blob_id_t blob;
-} asn_user_blob_t;
+#include <casn/asn.h>
 
 #define foreach_asn_app_message_type		\
   _ (text)					\
@@ -49,7 +34,7 @@ always_inline void asn_app_text_message_free (asn_app_text_message_t * m)
 typedef struct {
   asn_app_message_header_t header;
   u8 * thumbnail_as_jpeg_data;
-  asn_blob_id_t asn_id_of_raw_data;
+  u8 * blob_name_of_raw_data;
 } asn_app_photo_message_t;
 
 always_inline void asn_app_photo_message_free (asn_app_photo_message_t * p)
@@ -70,7 +55,7 @@ always_inline void asn_app_friend_request_message_free (asn_app_friend_request_m
 typedef struct {
   asn_app_message_header_t header;
   asn_user_id_t group_owner;
-  asn_user_blob_t user_to_add;
+  asn_user_id_t user_to_add;
   /* Zero for add; non-zero for delete. */
   u8 is_del;
 } asn_app_user_group_add_del_request_message_t;

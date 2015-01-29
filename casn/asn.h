@@ -19,6 +19,10 @@ typedef struct {
 } asn_crypto_public_keys_t;
 
 typedef struct {
+  u8 key[crypto_box_public_key_bytes];
+} asn_user_id_t;
+
+typedef struct {
   asn_crypto_private_keys_t private;
   asn_crypto_public_keys_t public;
 } asn_crypto_keys_t;
