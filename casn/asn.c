@@ -892,26 +892,27 @@ static void asn_main_connection_will_close (websocket_main_t * wsm, websocket_so
   if (as->client_socket_index < vec_len (am->client_sockets))
     {
       asn_client_socket_t * cs = &am->client_sockets[as->client_socket_index];
+      int is_first_failed_close = cs->timestamps.first_close < cs->timestamps.open;
+      f64 now = unix_time_now ();
+      f64 backoff_min_time = 1;
+      f64 backoff_max_time = 15;
+      f64 backoff_expon = 1.5;
 
       cs->socket_index = ~0;
 
-      if (cs->timestamps.first_close < cs->timestamps.open)
-	cs->timestamps.first_close = unix_time_now ();
-
-      {
-	f64 backoff_min_time = 1;
-	f64 backoff_max_time = 15;
-	f64 backoff_expon = 1.5;
-
-	if (cs->timestamps.backoff == 0)
+      if (is_first_failed_close)
+	{
+	  cs->timestamps.first_close = now;
 	  cs->timestamps.backoff = backoff_min_time;
-	else
+	}
+      else
+	{
 	  cs->timestamps.backoff *= backoff_expon;
-	if (cs->timestamps.backoff > backoff_max_time)
-	  cs->timestamps.backoff = backoff_max_time;
+	  if (cs->timestamps.backoff > backoff_max_time)
+	    cs->timestamps.backoff = backoff_max_time;
+	}
 
-	cs->timestamps.next_connect_attempt = cs->timestamps.first_close + cs->timestamps.backoff;
-      }
+      cs->timestamps.next_connect_attempt = now + cs->timestamps.backoff;
     }
 }
 
@@ -934,6 +935,7 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
 
   {
     asn_client_socket_t * cs;
+    int is_first_connection_attempt = client_socket_index == ~0;
 
     if (client_socket_index == ~0)
       vec_add2 (am->client_sockets, cs, 1);
@@ -943,8 +945,19 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
     as->client_socket_index = cs - am->client_sockets;
     cs->socket_index = ws->index;
     cs->socket_type = ASN_SOCKET_TYPE_websocket;
-    cs->timestamps.open = unix_time_now ();
-    cs->timestamps.first_close = 0;
+    if (is_first_connection_attempt)
+      cs->timestamps.open = unix_time_now ();
+
+    if (am->verbose)
+      {
+	f64 now = unix_time_now ();
+	if (is_first_connection_attempt)
+	  clib_warning ("%U: trying connection to %s", format_time_float, 0, now, am->client_config);
+	else
+	  clib_warning ("%U: re-trying connection to %s, backoff %.4f",
+			format_time_float, 0, now, 
+			am->client_config, cs->timestamps.backoff);
+      }
   }
 
   return error;
