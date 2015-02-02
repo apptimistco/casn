@@ -185,6 +185,8 @@ asn_pdu_n_content_bytes_for_blob (asn_pdu_blob_t * b, u32 n_bytes_in_pdu)
   return n_bytes_in_pdu - sizeof (b[0]) - b->n_name_bytes;
 }
 
+struct asn_user_t;
+
 typedef struct {
   char * name;
 
@@ -197,6 +199,11 @@ typedef struct {
 
   /* Pool of users with this type. */
   void * user_pool;
+
+  /* Function to free a pool element. */
+  void (* free_user) (struct asn_user_t * au);
+
+  serialize_function_t * serialize_user, * unserialize_user;
 } asn_user_type_t;
 
 asn_user_type_t ** asn_user_type_pool;
@@ -235,8 +242,6 @@ asn_user_ref_as_uword (asn_user_ref_t * r)
     }
   return w;
 }
-
-struct asn_user_t;
 
 always_inline struct asn_user_t *
 asn_user_by_ref (asn_user_ref_t * r)
@@ -324,6 +329,13 @@ typedef struct asn_user_t
   /* Bitmap to indicate whether above array indices are valid. */
   uword * crypto_state_by_user_index_is_valid_bitmap;
 } asn_user_t;
+
+always_inline void
+asn_user_free (asn_user_t * u)
+{
+  vec_free (u->crypto_state_by_user_index);
+  clib_bitmap_free (u->crypto_state_by_user_index_is_valid_bitmap);
+}
 
 always_inline asn_user_t *
 asn_user_alloc_with_type (asn_user_type_t * ut)
@@ -505,6 +517,7 @@ asn_socket_at_index (asn_main_t * am, u32 i)
 }
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket);
+void asn_main_free (asn_main_t * am);
 clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index);
 clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_random_keys);
 
@@ -534,6 +547,8 @@ asn_new_user_with_type (asn_main_t * am,
 asn_user_t *
 asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u8 * encrypt_key, u8 * auth_key);
 
+void asn_user_type_free (asn_user_type_t * t);
+
 clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
@@ -545,5 +560,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am);
 clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude);
 
 format_function_t format_asn_user_type, format_asn_user_mark_response;
+serialize_function_t serialize_asn_user, unserialize_asn_user;
+serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
 
 #endif /* included_asn_h */

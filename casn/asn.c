@@ -1236,3 +1236,68 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
 
   return error;
 }
+
+void asn_main_free (asn_main_t * am)
+{
+  {
+    int i;
+    for (i = 0; i < ARRAY_LEN (am->user_ref_by_public_encrypt_key); i++)
+      hash_free (am->user_ref_by_public_encrypt_key[i]);
+  }
+  vec_free (am->blob_name_vector_for_reuse);
+  {
+    int i;
+    vec_foreach_index (i, am->blob_handlers)
+      vec_free (am->blob_handlers[i].name);
+    vec_free (am->blob_handlers);
+    hash_free (am->blob_handler_index_by_name);
+  }
+  {
+    asn_client_socket_t * cs;
+    vec_foreach (cs, am->client_sockets)
+      asn_client_socket_free (cs);
+    vec_free (am->client_sockets);
+  }
+}
+
+void asn_user_type_free (asn_user_type_t * t)
+{
+  void * u;
+  uword i;
+  u = t->user_pool;
+  vec_foreach_index (i, t->user_pool)
+    {
+      if (! pool_is_free_index (t->user_pool, i))
+	{
+	  asn_user_t * au = u + t->user_type_offset_of_asn_user;
+	  t->free_user (au);
+	  asn_user_free (au);
+	}
+      u += t->user_type_n_bytes;
+    }
+  pool_free (t->user_pool);
+}
+
+void serialize_asn_user (serialize_main_t * m, va_list * va)
+{
+  asn_user_t * u = va_arg (*va, asn_user_t *);
+  ASSERT (u);
+}
+
+void unserialize_asn_user (serialize_main_t * m, va_list * va)
+{
+  asn_user_t * u = va_arg (*va, asn_user_t *);
+  ASSERT (u);
+}
+
+void serialize_asn_user_type (serialize_main_t * m, va_list * va)
+{
+  asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
+  ASSERT (t);
+}
+
+void unserialize_asn_user_type (serialize_main_t * m, va_list * va)
+{
+  asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
+  ASSERT (t);
+}

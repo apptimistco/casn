@@ -270,7 +270,7 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
 }
 
 static void
-serialize_asn_app_attribute_with_index (serialize_main_t * m, va_list * va)
+serialize_asn_app_attributes_for_index (serialize_main_t * m, va_list * va)
 {
   asn_app_attribute_main_t * am = va_arg (*va, asn_app_attribute_main_t *);
   u32 vi = va_arg (*va, u32);
@@ -280,7 +280,7 @@ serialize_asn_app_attribute_with_index (serialize_main_t * m, va_list * va)
 }
 
 static void
-unserialize_asn_app_attribute_with_index (serialize_main_t * m, va_list * va)
+unserialize_asn_app_attributes_for_index (serialize_main_t * m, va_list * va)
 {
   asn_app_attribute_main_t * am = va_arg (*va, asn_app_attribute_main_t *);
   u32 vi = va_arg (*va, u32);
@@ -291,96 +291,6 @@ unserialize_asn_app_attribute_with_index (serialize_main_t * m, va_list * va)
       a = vec_elt_at_index (am->attributes, am->attribute_map_for_unserialize[i]);
       unserialize (m, unserialize_asn_app_attribute_value, a, vi);
     }
-}
-
-static void
-serialize_asn_app_user (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
-  u32 n_user = va_arg (*va, u32);
-  u32 i;
-  for (i = 0; i < n_user; i++)
-    vec_serialize (m, u[i].photos, serialize_asn_app_photo);
-}
-
-static void
-unserialize_asn_app_user (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
-  u32 n_user = va_arg (*va, u32);
-  u32 i;
-  for (i = 0; i < n_user; i++)
-    vec_unserialize (m, &u[i].photos, unserialize_asn_app_photo);
-}
-
-static char * asn_app_main_serialize_magic = "asn_app_main v0";
-
-void
-serialize_asn_app_main (serialize_main_t * m, va_list * va)
-{
-  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
-
-  serialize_magic (m, asn_app_main_serialize_magic, strlen (asn_app_main_serialize_magic));
-
-  pool_serialize (m, am->user_pool, serialize_asn_app_user);
-
-  {
-    asn_app_user_t * u;
-    serialize (m, serialize_asn_app_attribute_main, &am->user_attribute_main);
-    pool_foreach (u, am->user_pool, ({
-      serialize (m, serialize_asn_app_attribute_with_index, &am->user_attribute_main, u->index);
-    }));
-  }
-}
-
-void
-unserialize_asn_app_main (serialize_main_t * m, va_list * va)
-{
-  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
-
-  unserialize_check_magic (m, asn_app_main_serialize_magic,
-			   strlen (asn_app_main_serialize_magic),
-			   "asn_app_main");
-
-
-  pool_unserialize (m, &am->user_pool, unserialize_asn_app_user);
-
-  {
-    asn_app_user_t * u;
-    unserialize (m, unserialize_asn_app_attribute_main, &am->user_attribute_main);
-    pool_foreach (u, am->user_pool, ({ unserialize (m, unserialize_asn_app_attribute_with_index, am, u->index); }));
-    vec_free (am->user_attribute_main.attribute_map_for_unserialize);
-  }
-}
-
-clib_error_t * asn_app_main_write_to_file (asn_app_main_t * am, char * unix_file)
-{
-  serialize_main_t m;
-  clib_error_t * error;
-
-  error = serialize_open_unix_file (&m, unix_file);
-  if (error)
-    return error;
-  error = serialize (&m, serialize_asn_app_main, am);
-  if (! error)
-    serialize_close (&m);
-  serialize_main_free (&m);
-  return error;
-}
-
-clib_error_t * asn_app_main_read_from_file (asn_app_main_t * am, char * unix_file)
-{
-  serialize_main_t m;
-  clib_error_t * error;
-
-  error = unserialize_open_unix_file (&m, unix_file);
-  if (error)
-    return error;
-  error = unserialize (&m, unserialize_asn_app_main, am);
-  if (! error)
-    unserialize_close (&m);
-  unserialize_main_free (&m);
-  return error;
 }
 
 void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
@@ -699,32 +609,20 @@ static void asn_app_attribute_main_free (asn_app_attribute_main_t * am)
   vec_free (am->attribute_map_for_unserialize);
 }
 
+void asn_app_user_type_free (asn_app_user_type_t * t)
+{
+  asn_user_type_free (&t->user_type);
+  asn_app_attribute_main_free (&t->attribute_main);
+}
+
 void asn_app_main_free (asn_app_main_t * am)
 {
   {
-    asn_app_user_t * u;
-    pool_foreach (u, am->user_pool, ({ asn_app_user_free (u); }));
-    pool_free (am->user_pool);
-    asn_app_attribute_main_free (&am->user_attribute_main);
+    asn_app_user_type_t * ut;
+    asn_main_free (&am->asn_main);
+    for (ut = am->user_types; ut < am->user_types + ARRAY_LEN (am->user_types); ut++)
+      asn_app_user_type_free (ut);
   }
-
-  {
-    asn_app_user_group_t * u;
-    pool_foreach (u, am->user_group_pool, ({ asn_app_user_group_free (u); }));
-    pool_free (am->user_group_pool);
-    asn_app_attribute_main_free (&am->user_group_attribute_main);
-  }
-
-  {
-    asn_app_event_t * e;
-    pool_foreach (e, am->event_pool, ({ asn_app_event_free (e); }));
-    pool_free (am->event_pool);
-    asn_app_attribute_main_free (&am->event_attribute_main);
-  }
-
-  hash_free (am->user_index_by_id);
-  hash_free (am->user_group_index_by_id);
-  hash_free (am->event_index_by_id);
 }
 
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1)
@@ -828,4 +726,213 @@ unserialize_asn_app_message (serialize_main_t * m, va_list * va)
       serialize_error_return (m, "unknown message type 0x%x", h.type);
       break;
     }
+}
+
+static void
+serialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
+  asn_user_type_t * asn_ut = pool_elt (asn_user_type_pool, u->asn_user.user_type_index);
+  asn_app_user_type_t * ut = CONTAINER_OF (asn_ut, asn_app_user_type_t, user_type);
+  serialize (m, serialize_asn_user, &u->asn_user);
+  vec_serialize (m, u->photos, serialize_asn_app_photo);
+  vec_serialize (m, u->messages_by_increasing_time, serialize_asn_app_message);
+  serialize (m, serialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
+}
+
+static void
+unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_gen_user_t * u = va_arg (*va, asn_app_user_t *);
+  asn_user_type_t * asn_ut;
+  asn_app_user_type_t * ut;
+  unserialize (m, unserialize_asn_user, &u->asn_user);
+  vec_unserialize (m, &u->photos, serialize_asn_app_photo);
+  vec_unserialize (m, &u->messages_by_increasing_time, serialize_asn_app_message);
+
+  asn_ut = pool_elt (asn_user_type_pool, u->asn_user.user_type_index);
+  ut = CONTAINER_OF (asn_ut, asn_app_user_type_t, user_type);
+  unserialize (m, unserialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
+}
+
+static void
+serialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  serialize (m, serialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void
+unserialize_asn_app_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  unserialize (m, unserialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void
+serialize_asn_app_user_group (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_group_t * u = va_arg (*va, asn_app_user_group_t *);
+  serialize (m, serialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void
+unserialize_asn_app_user_group (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_group_t * u = va_arg (*va, asn_app_user_group_t *);
+  unserialize (m, unserialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void
+serialize_asn_app_event (serialize_main_t * m, va_list * va)
+{
+  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  serialize (m, serialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void
+unserialize_asn_app_event (serialize_main_t * m, va_list * va)
+{
+  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  unserialize (m, unserialize_asn_app_gen_user, &u->gen_user);
+  ASSERT (0);
+}
+
+static void serialize_asn_app_user_type (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_type_t * t = va_arg (*va, asn_app_user_type_t *);
+  serialize (m, serialize_asn_user_type, &t->user_type);
+  serialize (m, serialize_asn_app_attribute_main, &t->attribute_main);
+}
+
+static void unserialize_asn_app_user_type (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_type_t * t = va_arg (*va, asn_app_user_type_t *);
+  unserialize (m, unserialize_asn_user_type, &t->user_type);
+  unserialize (m, unserialize_asn_app_attribute_main, &t->attribute_main);
+}
+
+static char * asn_app_main_serialize_magic = "asn_app_main v0";
+
+void
+serialize_asn_app_main (serialize_main_t * m, va_list * va)
+{
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  int i;
+
+  serialize_magic (m, asn_app_main_serialize_magic, strlen (asn_app_main_serialize_magic));
+  for (i = 0; i < ARRAY_LEN (am->user_types); i++)
+    serialize (m, serialize_asn_app_user_type, &am->user_types[i]);
+}
+
+void
+unserialize_asn_app_main (serialize_main_t * m, va_list * va)
+{
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  int i;
+
+  unserialize_check_magic (m, asn_app_main_serialize_magic,
+			   strlen (asn_app_main_serialize_magic),
+			   "asn_app_main");
+
+  for (i = 0; i < ARRAY_LEN (am->user_types); i++)
+    unserialize (m, unserialize_asn_app_user_type, &am->user_types[i]);
+}
+
+clib_error_t * asn_app_main_write_to_file (asn_app_main_t * am, char * unix_file)
+{
+  serialize_main_t m;
+  clib_error_t * error;
+
+  error = serialize_open_unix_file (&m, unix_file);
+  if (error)
+    return error;
+  error = serialize (&m, serialize_asn_app_main, am);
+  if (! error)
+    serialize_close (&m);
+  serialize_main_free (&m);
+  return error;
+}
+
+clib_error_t * asn_app_main_read_from_file (asn_app_main_t * am, char * unix_file)
+{
+  serialize_main_t m;
+  clib_error_t * error;
+
+  error = unserialize_open_unix_file (&m, unix_file);
+  if (error)
+    return error;
+  error = unserialize (&m, unserialize_asn_app_main, am);
+  if (! error)
+    unserialize_close (&m);
+  unserialize_main_free (&m);
+  return error;
+}
+
+static void asn_app_free_user (asn_user_t * au)
+{
+  asn_app_user_t * u = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
+  asn_app_user_free (u);
+}
+
+static void asn_app_free_user_group (asn_user_t * au)
+{
+  asn_app_user_group_t * u = CONTAINER_OF (au, asn_app_user_group_t, gen_user.asn_user);
+  asn_app_user_group_free (u);
+}
+
+static void asn_app_free_event (asn_user_t * au)
+{
+  asn_app_event_t * u = CONTAINER_OF (au, asn_app_user_group_t, gen_user.asn_user);
+  asn_app_event_free (u);
+}
+
+void asn_app_main_init (asn_app_main_t * am)
+{
+  {
+    asn_user_type_t t = {
+      .name = "actual user",
+      .user_type_n_bytes = sizeof (asn_app_user_t),
+      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_t, gen_user.asn_user),
+      .free_user = asn_app_free_user,
+      .serialize_user = serialize_asn_app_user,
+      .unserialize_user = unserialize_asn_app_user,
+    };
+
+    am->user_types[ASN_APP_USER_TYPE_user].user_type = t;
+    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user].user_type);
+  }
+
+  {
+    asn_user_type_t t = {
+      .name = "user group",
+      .user_type_n_bytes = sizeof (asn_app_user_group_t),
+      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_group_t, gen_user.asn_user),
+      .free_user = asn_app_free_user_group,
+      .serialize_user = serialize_asn_app_user_group,
+      .unserialize_user = unserialize_asn_app_user_group,
+    };
+
+    am->user_types[ASN_APP_USER_TYPE_user_group].user_type = t;
+    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user_group].user_type);
+  }
+
+  {
+    asn_user_type_t t = {
+      .name = "event",
+      .user_type_n_bytes = sizeof (asn_app_event_t),
+      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_event_t, gen_user.asn_user),
+      .free_user = asn_app_free_event,
+      .serialize_user = serialize_asn_app_event,
+      .unserialize_user = unserialize_asn_app_event,
+    };
+
+    am->user_types[ASN_APP_USER_TYPE_event].user_type = t;
+    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_event].user_type);
+  }
 }

@@ -167,16 +167,36 @@ asn_app_attribute_is_oneof (asn_app_attribute_t * a)
 }
 
 typedef struct {
-  u32 index;
-  u8 * id;
+  asn_user_t asn_user;
+
+  /* Photos of user, event, user group. */
+  asn_app_photo_t * photos;
+
+  asn_app_message_union_t * messages_by_increasing_time;
+} asn_app_gen_user_t;
+
+always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
+{
+  asn_user_free (&u->asn_user);
+
+  {
+    asn_app_photo_t * p;
+    vec_foreach (p, u->photos)
+      asn_app_photo_free (p);
+    vec_free (u->photos);
+  }
+
+  asn_app_message_union_vector_free (&u->messages_by_increasing_time);
+}
+
+typedef struct {
+  asn_app_gen_user_t gen_user;
   u32 show_user_on_map : 1;
   u32 is_checked_in : 1;
   uword * user_friends;
-  asn_app_photo_t * photos;
   u32 recent_check_in_location_index;
   asn_app_location_t recent_check_in_locations[32];
   asn_app_position_on_earth_t position_on_earth;
-  asn_app_message_union_t * messages_by_increasing_time;
   uword * events_rsvpd_for_user;
 } asn_app_user_t;
 
@@ -191,12 +211,7 @@ asn_app_check_in_location_for_user (asn_app_user_t * au)
 
 always_inline void asn_app_user_free (asn_app_user_t * u)
 {
-  {
-    asn_app_photo_t * p;
-    vec_foreach (p, u->photos)
-      asn_app_photo_free (p);
-    vec_free (u->photos);
-  }
+  asn_app_gen_user_free (&u->gen_user);
 
   {
     int i;
@@ -204,40 +219,25 @@ always_inline void asn_app_user_free (asn_app_user_t * u)
       asn_app_location_free (&u->recent_check_in_locations[i]);
   }
 
-  asn_app_message_union_vector_free (&u->messages_by_increasing_time);
-
-  vec_free (u->id);
   hash_free (u->user_friends);
   hash_free (u->events_rsvpd_for_user);
 }
 
 typedef struct {
-  u32 index;
-
-  asn_app_photo_t * photos;
+  asn_app_gen_user_t gen_user;
 
   /* Hash of user indices that are in this group. */
   uword * group_users;
-
-  asn_app_message_union_t * messages_by_increasing_time;
 } asn_app_user_group_t;
 
 always_inline void asn_app_user_group_free (asn_app_user_group_t * u)
 {
-  {
-    asn_app_photo_t * p;
-    vec_foreach (p, u->photos)
-      asn_app_photo_free (p);
-    vec_free (u->photos);
-  }
-
+  asn_app_gen_user_free (&u->gen_user);
   hash_free (u->group_users);
-
-  asn_app_message_union_vector_free (&u->messages_by_increasing_time);
 }
 
 typedef struct {
-  u32 index;
+  asn_app_gen_user_t gen_user;
 
   /* Private versus public event. */
   u32 is_private : 1;
@@ -250,26 +250,15 @@ typedef struct {
 
   asn_app_position_on_earth_t position_on_earth;
 
-  asn_app_photo_t * photos;
-
   /* Hash of user indices that have RSVPd for this event. */
   uword * users_rsvpd_for_event;
-  
-  /* Comments about this event. */
-  asn_app_message_union_t * messages_by_increasing_time;
 } asn_app_event_t;
 
 always_inline void asn_app_event_free (asn_app_event_t * e)
 {
+  asn_app_gen_user_free (&e->gen_user);
   asn_app_location_free (&e->location);
-  {
-    asn_app_photo_t * p;
-    vec_foreach (p, e->photos)
-      asn_app_photo_free (p);
-    vec_free (e->photos);
-  }
   hash_free (e->users_rsvpd_for_event);
-  asn_app_message_union_vector_free (&e->messages_by_increasing_time);
 }
 
 typedef struct {
@@ -279,21 +268,40 @@ typedef struct {
 } asn_app_attribute_main_t;
 
 typedef struct {
-  asn_app_user_t * user_pool;
-  uword * user_index_by_id;
-  u32 self_user_index;
-  asn_app_attribute_main_t user_attribute_main;
+  asn_user_type_t user_type;
 
-  asn_app_user_group_t * user_group_pool;
-  uword * user_group_index_by_id;
-  asn_app_attribute_main_t user_group_attribute_main;
+  asn_app_attribute_main_t attribute_main;
+} asn_app_user_type_t;
 
-  asn_app_event_t * event_pool;
-  uword * event_index_by_id;
-  asn_app_attribute_main_t event_attribute_main;
+#define foreach_asn_app_user_type		\
+  _ (user) _ (user_group) _ (event) _ (place)
+
+typedef enum {
+#define _(f) ASN_APP_USER_TYPE_##f,
+  foreach_asn_app_user_type
+#undef _
+  ASN_APP_N_USER_TYPE,
+} asn_app_user_type_enum_t;
+
+typedef struct {
+  asn_main_t asn_main;
+
+  asn_app_user_type_t user_types[ASN_APP_N_USER_TYPE];
 } asn_app_main_t;
 
+always_inline void *
+asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
+{
+  asn_user_type_t * ut = &am->user_types[t].user_type;
+  asn_user_t * au = asn_new_user_with_type (&am->asn_main, ASN_TX, ut->index,
+					    /* with_public_keys */ 0,
+					    /* with_private_keys */ 0);
+  return (void *) au - ut->user_type_offset_of_asn_user;
+}
+
+void asn_app_main_init (asn_app_main_t * am);
 void asn_app_main_free (asn_app_main_t * am);
+
 clib_error_t * asn_app_main_write_to_file (asn_app_main_t * am, char * unix_file);
 clib_error_t * asn_app_main_read_from_file (asn_app_main_t * am, char * unix_file);
 
