@@ -185,15 +185,90 @@ asn_pdu_n_content_bytes_for_blob (asn_pdu_blob_t * b, u32 n_bytes_in_pdu)
   return n_bytes_in_pdu - sizeof (b[0]) - b->n_name_bytes;
 }
 
-#define foreach_asn_user_type \
-  _ (unknown) _ (actual) _ (forum) _ (bridge) _ (place)
+typedef struct {
+  char * name;
 
-typedef enum {
-#define _(f) ASN_USER_TYPE_##f,
-  foreach_asn_user_type
-#undef _
-  ASN_N_USER_TYPE,
+  /* Index for this type.  Set when registering. */
+  u32 index;
+
+  /* Size and offset of asn_user_t in super type. */
+  u32 user_type_n_bytes;
+  u32 user_type_offset_of_asn_user;
+
+  /* Pool of users with this type. */
+  void * user_pool;
 } asn_user_type_t;
+
+asn_user_type_t ** asn_user_type_pool;
+
+always_inline uword
+asn_register_user_type (asn_user_type_t * t)
+{
+  uword ti = pool_set_elt (asn_user_type_pool, t);
+  t->index = ti;
+  return ti;
+}  
+
+/* A reference to a user type and pool index. */
+typedef struct {
+  u32 type_index;
+  u32 user_index;
+} asn_user_ref_t;
+
+always_inline void
+asn_user_ref_from_uword (asn_user_ref_t * r, uword w)
+{
+  r->user_index = w >> 6;
+  r->type_index = w & pow2_mask (6);
+}
+
+always_inline uword
+asn_user_ref_as_uword (asn_user_ref_t * r)
+{
+  uword w = (r->user_index << 6) | r->type_index;
+  if (CLIB_DEBUG > 0)
+    {
+      asn_user_ref_t t;
+      asn_user_ref_from_uword (&t, w);
+      ASSERT (t.user_index == r->user_index);
+      ASSERT (t.type_index == r->type_index);
+    }
+  return w;
+}
+
+struct asn_user_t;
+
+always_inline struct asn_user_t *
+asn_user_by_ref (asn_user_ref_t * r)
+{
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, r->type_index);
+  if (pool_is_free_index (ut->user_pool, r->user_index))
+    return 0;
+  else
+    return ut->user_pool + r->user_index*ut->user_type_n_bytes + ut->user_type_offset_of_asn_user;
+}
+
+always_inline struct asn_user_t *
+asn_user_by_ref_as_uword (uword k)
+{
+  asn_user_ref_t r;
+  asn_user_ref_from_uword (&r, k);
+  return asn_user_by_ref (&r);
+}
+
+always_inline void *
+asn_user_pool_for_user_ref (asn_user_ref_t * r)
+{
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, r->type_index);
+  return ut->user_pool;
+}
+
+always_inline void *
+asn_user_pool_for_user_type (u32 type_index)
+{
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, type_index);
+  return ut->user_pool;
+}
 
 typedef struct {
   u8 user[8];
@@ -223,10 +298,8 @@ asn_user_mark_response_place_eta (asn_user_mark_response_t * r)
   return r->place_and_eta & 0xf;
 }
 
-typedef struct {
-  /* ASN_USER_TYPE_* */
-  asn_user_type_t user_type;
-
+typedef struct asn_user_t 
+{
   /* Index into user pool. */
   u32 index;
 
@@ -237,28 +310,35 @@ typedef struct {
   /* Indexed by is_place. */
   u32 current_marks_are_valid : 2;
 
+  u32 user_type_index : 29;
+
   asn_crypto_keys_t crypto_keys;
 
   /* Indexed by is_place. */
   asn_user_mark_response_t current_marks[2];
 
-  union {
-    struct {
-      /* Nonce and shared secret for communication between this user and other users.
-         Indexed by known user pool index. */
-      asn_crypto_state_t * crypto_state_by_user_index;
+  /* Nonce and shared secret for communication between this user and other users.
+     Indexed by known user pool index. */
+  asn_crypto_state_t * crypto_state_by_user_index;
 
-      /* Bitmap to indicate whether above array indices are valid. */
-      uword * crypto_state_by_user_index_is_valid_bitmap;
-
-      u32 mark_response_is_valid[2];
-    } tx;
-
-    struct {
-      uword * socket_indices_logged_in_as_this_user;
-    } rx;
-  };
+  /* Bitmap to indicate whether above array indices are valid. */
+  uword * crypto_state_by_user_index_is_valid_bitmap;
 } asn_user_t;
+
+always_inline asn_user_t *
+asn_user_alloc_with_type (asn_user_type_t * ut)
+{
+  asn_user_t * au;
+  void * u;
+  uword i;
+  ut->user_pool = pool_get_free_index (ut->user_pool, ut->user_type_n_bytes, &i);
+  u = ut->user_pool + i * ut->user_type_n_bytes;
+  memset (u, 0, ut->user_type_n_bytes);
+  au = u + ut->user_type_offset_of_asn_user;
+  au->user_type_index = ut->index;
+  au->index = i;
+  return au;
+}
 
 #define foreach_asn_session_state               \
   _ (opened)					\
@@ -358,12 +438,6 @@ asn_socket_free (asn_socket_t * as)
   hash_free (as->users_logged_in_this_socket);
 }
 
-typedef struct {
-  asn_user_t * user_pool;
-
-  uword * user_by_public_encrypt_key;
-} asn_known_users_t;
-
 typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);
 
 typedef struct {
@@ -411,12 +485,10 @@ typedef struct asn_main_t {
 
   u32 verbose;
 
-  /* Index of self user (normally 0). */
-  u32 self_user_index;
+  /* Index and user type of self user. */
+  asn_user_ref_t self_user_ref;
 
-  asn_known_users_t known_users[ASN_N_RX_TX];
-
-  uword * asn_user_type_by_name;
+  uword * user_ref_by_public_encrypt_key[ASN_N_RX_TX];
 
   u8 * blob_name_vector_for_reuse;
 
@@ -436,30 +508,31 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
 clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index);
 clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_random_keys);
 
+always_inline uword
+asn_is_user_for_ref (asn_user_t * au, asn_user_ref_t * r)
+{ return r->user_index == au->index && r->type_index == au->user_type_index; }
+
 always_inline asn_user_t *
 asn_user_with_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key)
 {
-  asn_known_users_t * ku = &am->known_users[rt];
   uword * p;
 
-  if (pool_elts (ku->user_pool) > 0
-      && (p = hash_get_mem (ku->user_by_public_encrypt_key, encrypt_key)))
-    return pool_elt_at_index (ku->user_pool, p[0]);
+  if (am->user_ref_by_public_encrypt_key[rt]
+      && (p = hash_get_mem (am->user_ref_by_public_encrypt_key[rt], encrypt_key)))
+    return asn_user_by_ref_as_uword (p[0]);
   else
     return 0;
 }
 
-asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string);
 asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
-			asn_user_type_t with_user_type,
+			u32 user_type_index,
 			asn_crypto_public_keys_t * with_public_keys,
 			asn_crypto_private_keys_t * with_private_keys);
 
 asn_user_t *
-asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
-		      u8 * encrypt_key, u8 * auth_key);
+asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u8 * encrypt_key, u8 * auth_key);
 
 clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);

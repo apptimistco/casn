@@ -4,6 +4,39 @@
 #include <uclib/uclib.h>
 #include <casn/asn.h>
 
+typedef struct {
+  /* Thumbnail for object as JPEG (or other) image. */
+  u8 * thumbnail_as_image_data;
+
+  /* Blob name which holds raw data for image, video etc. */
+  u8 * blob_name_for_raw_data;
+} asn_app_photo_t;
+
+always_inline void asn_app_photo_free (asn_app_photo_t * p)
+{
+  vec_free (p->thumbnail_as_image_data);
+  vec_free (p->blob_name_for_raw_data);
+}
+
+typedef struct {
+  f64 longitude, latitude;
+} asn_app_position_on_earth_t;
+
+typedef struct {
+  u8 * unique_id;		/* => name of location blob */
+  u8 ** address_lines;
+  u8 * thumbnail_as_image_data;
+} asn_app_location_t;
+
+always_inline void asn_app_location_free (asn_app_location_t * l)
+{
+  vec_free (l->unique_id);
+  uword i;
+  vec_foreach_index (i, l->address_lines) vec_free (l->address_lines[i]);
+  vec_free (l->address_lines);
+  vec_free (l->thumbnail_as_image_data);
+}
+
 #define foreach_asn_app_message_type		\
   _ (text)					\
   _ (photo)					\
@@ -33,17 +66,16 @@ always_inline void asn_app_text_message_free (asn_app_text_message_t * m)
 
 typedef struct {
   asn_app_message_header_t header;
-  u8 * thumbnail_as_jpeg_data;
-  u8 * blob_name_of_raw_data;
+  asn_app_photo_t photo;
 } asn_app_photo_message_t;
 
 always_inline void asn_app_photo_message_free (asn_app_photo_message_t * p)
-{ vec_free (p->thumbnail_as_jpeg_data); }
+{ asn_app_photo_free (&p->photo); }
 
 typedef asn_app_photo_message_t asn_app_video_message_t;
 
 always_inline void asn_app_video_message_free (asn_app_video_message_t * p)
-{ vec_free (p->thumbnail_as_jpeg_data); }
+{ asn_app_photo_free (&p->photo); }
 
 typedef struct {
   asn_app_message_header_t header;
@@ -54,7 +86,7 @@ always_inline void asn_app_friend_request_message_free (asn_app_friend_request_m
 
 typedef struct {
   asn_app_message_header_t header;
-  asn_user_id_t group_owner;
+  asn_user_id_t group_id;
   asn_user_id_t user_to_add;
   /* Zero for add; non-zero for delete. */
   u8 is_del;
@@ -85,33 +117,6 @@ always_inline void asn_app_message_union_vector_free (asn_app_message_union_t **
   vec_foreach (m, *mv)
     asn_app_message_union_free (m);
   vec_free (*mv);
-}
-
-typedef struct {
-  u8 * thumbnail_as_image_data;
-  u8 * blob_name_for_raw_image_data;
-} asn_app_photo_t;
-
-always_inline void asn_app_photo_free (asn_app_photo_t * p)
-{ vec_free (p->thumbnail_as_image_data); vec_free (p->blob_name_for_raw_image_data); }
-
-typedef struct {
-  f64 longitude, latitude;
-} asn_app_position_on_earth_t;
-
-typedef struct {
-  u8 * unique_id;		/* => name of location blob */
-  u8 ** address_lines;
-  u8 * thumbnail_as_image_data;
-} asn_app_location_t;
-
-always_inline void asn_app_location_free (asn_app_location_t * l)
-{
-  vec_free (l->unique_id);
-  uword i;
-  vec_foreach_index (i, l->address_lines) vec_free (l->address_lines[i]);
-  vec_free (l->address_lines);
-  vec_free (l->thumbnail_as_image_data);
 }
 
 #define foreach_asn_app_attribute_type		\

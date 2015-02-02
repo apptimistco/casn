@@ -70,7 +70,7 @@ asn_user_key_to_mem (asn_main_t * am, asn_rx_or_tx_t rt, uword k)
   u8 * m;
   if (k % 2)
     {
-      u = pool_elt_at_index (am->known_users[rt].user_pool, k / 2);
+      u = asn_user_by_ref_as_uword (k / 2);
       m = u->crypto_keys.public.encrypt_key;
     }
   else
@@ -99,8 +99,7 @@ asn_user_by_key_key_equal (hash_t * h, uword key1, uword key2)
 }
 
 asn_user_t *
-asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_type,
-		      u8 * encrypt_key, u8 * auth_key)
+asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u8 * encrypt_key, u8 * auth_key)
 {
   asn_user_t * au = asn_user_with_encrypt_key (am, rt, encrypt_key);
   if (! au)
@@ -108,10 +107,9 @@ asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_t
       asn_crypto_public_keys_t pk;
       memcpy (pk.encrypt_key, encrypt_key, sizeof (pk.encrypt_key));
       memcpy (pk.auth_key, auth_key, sizeof (pk.auth_key));
-      au = asn_new_user_with_type (am, rt, user_type, &pk, /* private keys */ 0);
+      au = asn_new_user_with_type (am, rt, user_type_index, &pk, /* private keys */ 0);
     }
 
-  ASSERT (au->user_type == user_type);
   if (auth_key)
     memcpy (au->crypto_keys.public.auth_key, auth_key, sizeof (au->crypto_keys.public.auth_key));
 
@@ -121,35 +119,32 @@ asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, asn_user_type_t user_t
 asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
-			asn_user_type_t with_user_type,
+			u32 user_type_index,
 			asn_crypto_public_keys_t * with_public_keys,
 			asn_crypto_private_keys_t * with_private_keys)
 {
   asn_user_t * au;
-  asn_known_users_t * ku = &am->known_users[rt];
   asn_crypto_keys_t * k;
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, user_type_index);
   uword * p;
 
   /* See if user already exists. */
   if (with_public_keys
-      && pool_elts (ku->user_pool) > 0
-      && (p = hash_get_mem (ku->user_by_public_encrypt_key, with_public_keys->encrypt_key)))
+      && pool_elts (ut->user_pool) > 0
+      && (p = hash_get_mem (am->user_ref_by_public_encrypt_key[rt], with_public_keys->encrypt_key)))
     {
-      au = pool_elt_at_index (ku->user_pool, p[0]);
+      au = asn_user_by_ref_as_uword (p[0]);
 
-      /* Update user type & auth key since they may change. */
-      au->user_type = with_user_type;
+      ASSERT (au->user_type_index == user_type_index);
+
+      /* Update auth key since they may change. */
       memcpy (au->crypto_keys.public.auth_key, with_public_keys->auth_key, sizeof (with_public_keys->auth_key));
 
       return au;
     }
   else
-    {
-      pool_get (ku->user_pool, au);
-      au->index = au - ku->user_pool;
-    }
+    au = asn_user_alloc_with_type (ut);
 
-  au->user_type = with_user_type;
   k = &au->crypto_keys;
 
   if (with_public_keys)
@@ -175,8 +170,8 @@ asn_new_user_with_type (asn_main_t * am,
       au->private_key_is_valid = 1;
     }
 
-  if (! ku->user_by_public_encrypt_key)
-    ku->user_by_public_encrypt_key
+  if (! am->user_ref_by_public_encrypt_key[rt])
+    am->user_ref_by_public_encrypt_key[rt]
       = hash_create2 (/* elts */ 0,
                       /* user */ pointer_to_uword (am) | rt,
                       /* value_bytes */ sizeof (uword),
@@ -185,48 +180,15 @@ asn_new_user_with_type (asn_main_t * am,
                       /* format pair/arg */
                       0, 0);
 
-  hash_set (ku->user_by_public_encrypt_key, 1 + 2*au->index, au->index);
+  {
+    asn_user_ref_t r;
+    r.type_index = ut->index;
+    r.user_index = au->index;
+    uword v = asn_user_ref_as_uword (&r);
+    hash_set (am->user_ref_by_public_encrypt_key[rt], 1 + 2*v, v);
+  }
 
   return au;
-}
-
-u8 * format_asn_user_type (u8 * s, va_list * va)
-{
-  asn_user_type_t x = va_arg (*va, asn_user_type_t);
-  char * t;
-  switch (x)
-    {
-#define _(f) case ASN_USER_TYPE_##f: t = #f; break;
-      foreach_asn_user_type
-#undef _
-
-    default:
-      return format (s, "unknown 0x%x", x);
-    }
-
-  vec_add (s, t, strlen (t));
-
-  return s;
-}
-
-asn_user_type_t asn_user_type_from_string (asn_main_t * am, u8 * type_string, uword n_bytes_in_type_string)
-{
-  u8 * user_type_as_vector = 0;
-  uword * p;
-
-  if (! am->asn_user_type_by_name)
-    {
-      am->asn_user_type_by_name = hash_create_string (0, sizeof (uword));
-#define _(f) hash_set_mem (am->asn_user_type_by_name, #f, ASN_USER_TYPE_##f);
-      foreach_asn_user_type;
-#undef _
-    }
-
-  vec_add (user_type_as_vector, type_string, n_bytes_in_type_string);
-  vec_add1 (user_type_as_vector, 0);
-  p = hash_get_mem (am->asn_user_type_by_name, user_type_as_vector);
-  vec_free (user_type_as_vector);
-  return p ? p[0] : ASN_USER_TYPE_unknown;
 }
 
 u8 * format_asn_user_mark_response (u8 * s, va_list * va)
@@ -245,11 +207,19 @@ u8 * format_asn_user_mark_response (u8 * s, va_list * va)
   return s;
 }
 
+u8 * format_asn_user_type (u8 * s, va_list * va)
+{
+  u32 user_type_index = va_arg (*va, u32);
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, user_type_index);
+  vec_add (s, ut->name, strlen (ut->name));
+  return s;
+}
+
 u8 * format_asn_user (u8 * s, va_list * va)
 {
   asn_user_t * au = va_arg (*va, asn_user_t *);
   
-  s = format (s, "type: %U", format_asn_user_type, au->user_type);
+  s = format (s, "type: %U", format_asn_user_type, au->user_type_index);
 
   return s;
 }
@@ -657,20 +627,19 @@ static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
   return s;
 }
 
-#if 0
 static asn_crypto_state_t *
 asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 {
   asn_crypto_state_t * cs;
 
-  if (clib_bitmap_get (from_user->tx.crypto_state_by_user_index_is_valid_bitmap, to_user->index))
-    return vec_elt_at_index (from_user->tx.crypto_state_by_user_index, to_user->index);
+  if (clib_bitmap_get (from_user->crypto_state_by_user_index_is_valid_bitmap, to_user->index))
+    return vec_elt_at_index (from_user->crypto_state_by_user_index, to_user->index);
 
-  vec_validate (from_user->tx.crypto_state_by_user_index, to_user->index);
-  from_user->tx.crypto_state_by_user_index_is_valid_bitmap
-    = clib_bitmap_ori (from_user->tx.crypto_state_by_user_index_is_valid_bitmap, to_user->index);
+  vec_validate (from_user->crypto_state_by_user_index, to_user->index);
+  from_user->crypto_state_by_user_index_is_valid_bitmap
+    = clib_bitmap_ori (from_user->crypto_state_by_user_index_is_valid_bitmap, to_user->index);
 
-  cs = vec_elt_at_index (to_user->tx.crypto_state_by_user_index, to_user->index);
+  cs = vec_elt_at_index (to_user->crypto_state_by_user_index, to_user->index);
 
   /* Initialize shared secret and nonce to zero. */
   memset (cs, 0, sizeof (cs[0]));
@@ -682,7 +651,6 @@ asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 
   return cs;
 }
-#endif
 
 #define _(f)                                                            \
   static clib_error_t *                                                 \
@@ -725,7 +693,7 @@ clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, as
   l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
   memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
   memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
-  l->header.casn_request_id.is_self_user_login = au->index == am->self_user_index;
+  l->header.casn_request_id.is_self_user_login = asn_is_user_for_ref (au, &am->self_user_ref);
   return asn_socket_tx (as);
 }
 
@@ -1005,7 +973,8 @@ clib_error_t * asn_add_listener (asn_main_t * am, u8 * socket_config, int want_r
 
 typedef struct {
   asn_exec_ack_handler_t ack_handler;
-  asn_user_type_t user_type;
+  u32 user_type_index;
+  u32 is_self_user;
 } asn_exec_newuser_ack_handler_t;
 
 static clib_error_t *
@@ -1023,16 +992,19 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
   memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
 
-  au = asn_new_user_with_type (am, ASN_TX, nah->user_type, /* with_public_keys */ 0, &pk);
+  au = asn_new_user_with_type (am, ASN_TX, nah->user_type_index, /* with_public_keys */ 0, &pk);
 
   if (am->verbose)
     clib_warning ("newuser type %U, user-keys %U %U",
-		  format_asn_user_type, nah->user_type,
+		  format_asn_user_type, nah->user_type_index,
 		  format_hex_bytes, au->crypto_keys.private.encrypt_key, sizeof (au->crypto_keys.private.encrypt_key),
 		  format_hex_bytes, au->crypto_keys.private.auth_key, 32);
 
-  if (pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index))
-    am->self_user_index = au->index;
+  if (nah->is_self_user)
+    {
+      am->self_user_ref.type_index = nah->user_type_index;
+      am->self_user_ref.user_index = au->index;
+    }
 
   return 0;
 }
@@ -1040,22 +1012,22 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
 clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
 {
   clib_error_t * error = 0;
-  uword self_user_is_unknown = pool_is_free_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
+  asn_user_t * au_self = asn_user_by_ref (&am->self_user_ref);
 
-  if (self_user_is_unknown && ! as->unknown_self_user_newuser_in_progress)
+  if (! au_self && ! as->unknown_self_user_newuser_in_progress)
     {
       asn_exec_newuser_ack_handler_t * nah = asn_exec_ack_handler_create_with_function_in_container
 	(asn_socket_exec_newuser_ack_handler,
 	 sizeof (nah[0]),
 	 STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
-      nah->user_type = ASN_USER_TYPE_actual;
-      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%cactual", 0, 0);
+      nah->user_type_index = am->self_user_ref.type_index;
+      nah->is_self_user = 1;
+      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
       as->unknown_self_user_newuser_in_progress = error == 0;
     }
-  else if (! self_user_is_unknown && ! as->self_user_login_in_progress)
+  else if (au_self && ! as->self_user_login_in_progress)
     {
-      asn_user_t * au = pool_elt_at_index (am->known_users[ASN_TX].user_pool, am->self_user_index);
-      error = asn_socket_login_for_user (am, as, au);
+      error = asn_socket_login_for_user (am, as, au_self);
       as->self_user_login_in_progress = error == 0;
     }
 
@@ -1140,36 +1112,64 @@ static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t 
   clib_error_t * error = 0;
   struct {
     u8 auth_public_key[32];
-    u8 user_type[0];
+    u8 user_type_as_u32_hex[8];
   } * ack_data = (void *) ack->data;
   asn_main_t * am = ah->asn_main;
   learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
   asn_user_t * au;
-  asn_user_type_t user_type;
+  u32 user_type_index;
 
-  if (n_bytes_ack_data < sizeof (ack_data[0]))
+  if (n_bytes_ack_data != sizeof (ack_data[0]))
     {
-      error = clib_error_return (0, "expected at least %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
+      error = clib_error_return (0, "expected %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
       goto done;
     }
 
-  user_type = asn_user_type_from_string (am, ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
-  if (user_type == ASN_USER_TYPE_unknown)
+  {
+    int i;
+    user_type_index = 0;
+    for (i = 0; i < ARRAY_LEN (ack_data->user_type_as_u32_hex); i++)
+      {
+	u8 c = ack_data->user_type_as_u32_hex[i];
+	u8 d;
+	switch (c)
+	  {
+	  case '0' ... '9':
+	    d = c - '0';
+	    break;
+
+	  case 'a' ... 'f':
+	    d = 10 + (c - 'a');
+	    break;
+
+	  case 'A' ... 'F':
+	    d = 10 + (c - 'A');
+	    break;
+
+	  default:
+	    error = clib_error_return (0, "expected hex digit found %c", c);
+	    goto done;
+	  }
+	user_type_index = (user_type_index << 4) | d;
+      }
+  }
+
+  if (pool_is_free_index (asn_user_type_pool, user_type_index))
     {
-      error = clib_error_return (0, "unknown user type `%*s'", ack_data->user_type, n_bytes_ack_data - sizeof (ack_data[0]));
+      error = clib_error_return (0, "unknown user type %d", user_type_index);
       goto done;
     }
 
   if (am->verbose)
     clib_warning ("type %U, encr %U, auth %U",
-		  format_asn_user_type, user_type,
+		  format_asn_user_type, user_type_index,
 		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
 		  format_hex_bytes, ack_data->auth_public_key, sizeof (ack_data->auth_public_key));
 
   {
     asn_user_mark_response_t * mr = &lah->mark_response;
     uword is_place = asn_user_mark_response_is_place (mr);
-    au = asn_update_peer_user (am, ASN_TX, ASN_USER_TYPE_actual, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
+    au = asn_update_peer_user (am, ASN_TX, user_type_index, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
     au->current_marks_are_valid |= 1 << is_place;
     au->current_marks[is_place] = mr[0];
   }

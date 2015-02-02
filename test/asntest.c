@@ -8,6 +8,10 @@ typedef struct {
 } test_asn_socket_t;
 
 typedef struct {
+  asn_user_t asn_user;
+} test_asn_user_t;
+
+typedef struct {
   asn_main_t asn_main;
   
   u8 * client_config;
@@ -27,6 +31,8 @@ typedef struct {
   u32 n_clients;
 
   f64 time_interval_between_echos;
+
+  asn_user_type_t user_types[1];
 } test_asn_main_t;
 
 static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
@@ -50,12 +56,33 @@ int test_asn_main (unformat_input_t * input)
   websocket_main_t * wsm = &am->websocket_main;
   clib_error_t * error = 0;
 
+#if 0
+  if (0) {
+    u8 cipher[32+32], nonce[24], key[32];
+
+    memset (nonce, 0, sizeof (nonce));
+    memset (cipher, 0, sizeof (cipher));
+    memset (key, 0, sizeof (key));
+
+    crypto_secretbox (cipher, cipher, sizeof (cipher), nonce, key);
+    clib_warning ("%U", format_hex_bytes, cipher, sizeof (cipher));
+    if (crypto_secretbox_open (cipher, cipher, sizeof (cipher), nonce, key) < 0)
+      os_panic ();
+    clib_warning ("%U", format_hex_bytes, cipher, sizeof (cipher));
+  }
+#endif
+
   memset (tm, 0, sizeof (tm[0]));
   am->server_config = (u8 *) "localhost:5000";
   wsm->verbose = 0;
   am->verbose = 0;
   tm->n_clients = 1;
   tm->time_interval_between_echos = 1 /* sec */;
+
+  tm->user_types[0].name = "actual";
+  tm->user_types[0].user_type_n_bytes = sizeof (test_asn_user_t);
+  tm->user_types[0].user_type_offset_of_asn_user = STRUCT_OFFSET_OF (test_asn_user_t, asn_user);
+  asn_register_user_type (&tm->user_types[0]);
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -140,15 +167,16 @@ int test_asn_main (unformat_input_t * input)
     }
 
   /* Possibly create self user. */
-  am->self_user_index = ~0;
+  am->self_user_ref.user_index = ~0;
+  am->self_user_ref.type_index = tm->user_types[0].index;
   if (tm->user_keys.private_encrypt_key)
     {
       asn_crypto_private_keys_t pk;
       asn_user_t * au;
       memcpy (pk.encrypt_key, tm->user_keys.private_encrypt_key, vec_len (tm->user_keys.private_encrypt_key));
       memcpy (pk.auth_key, tm->user_keys.private_auth_key, vec_len (tm->user_keys.private_auth_key));
-      au = asn_new_user_with_type (am, ASN_TX, ASN_USER_TYPE_actual, /* with_public_keys */ 0, &pk);
-      am->self_user_index = au->index;
+      au = asn_new_user_with_type (am, ASN_TX, am->self_user_ref.type_index, /* with_public_keys */ 0, &pk);
+      am->self_user_ref.user_index = au->index;
     }
 
   /* Unnamed "message" blobs. */
@@ -207,11 +235,11 @@ int test_asn_main (unformat_input_t * input)
 
 	      if (1) {
 		uword ui;
-		asn_user_t * user_pool = am->known_users[ASN_TX].user_pool;
+		asn_user_t * user_pool = asn_user_pool_for_user_ref (&am->self_user_ref);
 		vec_foreach_index (ui, user_pool)
 		  {
-		    asn_user_t * au = user_pool + ui;
-		    if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_index)
+		    asn_user_t * au = user_pool +  ui;
+		    if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_ref.user_index)
 		      {
 			static int oingoes;
 			error = asn_exec (as, 0, "blob%c~%U%c-%c%chello %d",

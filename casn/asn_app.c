@@ -7,7 +7,7 @@ serialize_asn_app_photo (serialize_main_t * m, va_list * va)
 {
   asn_app_photo_t * p = va_arg (*va, asn_app_photo_t *);
   vec_serialize (m, p->thumbnail_as_image_data, serialize_vec_8);
-  vec_serialize (m, p->blob_name_for_raw_image_data, serialize_vec_8);
+  vec_serialize (m, p->blob_name_for_raw_data, serialize_vec_8);
 }
 
 static void
@@ -15,7 +15,7 @@ unserialize_asn_app_photo (serialize_main_t * m, va_list * va)
 {
   asn_app_photo_t * p = va_arg (*va, asn_app_photo_t *);
   vec_unserialize (m, &p->thumbnail_as_image_data, unserialize_vec_8);
-  vec_unserialize (m, &p->blob_name_for_raw_image_data, unserialize_vec_8);
+  vec_unserialize (m, &p->blob_name_for_raw_data, unserialize_vec_8);
 }
 
 always_inline asn_app_attribute_type_t
@@ -731,4 +731,101 @@ int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_a
 {
   f64 cmp = m0->header.time_stamp - m1->header.time_stamp;
   return cmp > 0 ? +1 : (cmp < 0 ? -1 : 0);
+}
+
+static void serialize_asn_app_text_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
+  vec_serialize (m, msg->text, serialize_vec_8);
+}
+
+static void unserialize_asn_app_text_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
+  vec_unserialize (m, &msg->text, unserialize_vec_8);
+}
+
+static void serialize_asn_app_photo_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_photo_message_t * msg = va_arg (*va, asn_app_photo_message_t *);
+  serialize (m, &msg->photo, serialize_asn_app_photo);
+}
+
+static void unserialize_asn_app_photo_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_photo_message_t * msg = va_arg (*va, asn_app_photo_message_t *);
+  unserialize (m, &msg->photo, unserialize_asn_app_photo);
+}
+
+static void serialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
+  ASSERT (msg);
+}
+
+static void unserialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
+  ASSERT (msg);
+}
+
+void
+serialize_asn_app_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_message_union_t * msg = va_arg (*va, asn_app_message_union_t *);
+  asn_app_message_header_t * h = &msg->header;
+
+  /* User and time stamp will be copied to blob header and sent to ASN server. */
+  serialize_likely_small_unsigned_integer (m, h->type);
+
+  switch (h->type)
+    {
+    case ASN_APP_MESSAGE_TYPE_text:
+      serialize (m, serialize_asn_app_text_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_photo:
+    case ASN_APP_MESSAGE_TYPE_video:
+      serialize (m, serialize_asn_app_photo_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_user_group_add_del_request:
+      serialize (m, serialize_asn_app_user_group_add_del_request_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_friend_request:
+      /* nothing to do. */
+      break;
+    }
+}
+
+void
+unserialize_asn_app_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_message_union_t * msg = va_arg (*va, asn_app_message_union_t *);
+  asn_app_message_header_t h;
+  h.type = unserialize_likely_small_unsigned_integer (m);
+  switch (h.type)
+    {
+    case ASN_APP_MESSAGE_TYPE_text:
+      unserialize (m, unserialize_asn_app_text_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_photo:
+    case ASN_APP_MESSAGE_TYPE_video:
+      unserialize (m, unserialize_asn_app_photo_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_user_group_add_del_request:
+      unserialize (m, unserialize_asn_app_user_group_add_del_request_message, msg);
+      break;
+
+    case ASN_APP_MESSAGE_TYPE_friend_request:
+      /* nothing to do. */
+      break;
+
+    default:
+      serialize_error_return (m, "unknown message type 0x%x", h.type);
+      break;
+    }
 }
