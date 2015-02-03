@@ -504,6 +504,8 @@ typedef struct asn_main_t {
   asn_user_ref_t self_user_ref;
 
   uword * user_ref_by_public_encrypt_key[ASN_N_RX_TX];
+  uword * user_ref_by_public_encrypt_key_first_7_bytes[ASN_N_RX_TX];
+  uword * user_ref_by_public_encrypt_key_first_8_bytes[ASN_N_RX_TX];
 
   u8 * blob_name_vector_for_reuse;
 
@@ -538,6 +540,51 @@ asn_user_with_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key)
     return asn_user_by_ref_as_uword (p[0]);
   else
     return 0;
+}
+
+typedef union {
+  uword * value_vector;
+  struct {
+    uword is_inline : 1;
+    uword inline_value : BITS (uword) - 1;
+  };
+  uword as_uword;
+} asn_user_hash_value_t;
+
+always_inline uword *
+asn_users_matching_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key, uword n_bytes,
+				uword * result_vector)
+{
+  uword * hash = 0;
+  uword * p;
+  switch (n_bytes)
+    {
+    case 7:
+      hash = am->user_ref_by_public_encrypt_key_first_7_bytes[rt];
+      break;
+
+    case 8:
+      hash = am->user_ref_by_public_encrypt_key_first_8_bytes[rt];
+      break;
+
+    default:
+      ASSERT (0);
+      break;
+    }
+
+  vec_reset_length (result_vector);
+  p = hash_get (hash, encrypt_key);
+  if (p)
+    {
+      asn_user_hash_value_t hv;
+      hv.as_uword = p[0];
+      if (hv.is_inline)
+	vec_add1 (result_vector, hv.inline_value);
+      else
+	vec_add (result_vector, hv.value_vector, vec_len (hv.value_vector));
+    }
+
+  return result_vector;
 }
 
 asn_user_t *

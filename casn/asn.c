@@ -80,23 +80,49 @@ asn_user_key_to_mem (asn_main_t * am, asn_rx_or_tx_t rt, uword k)
 }
 
 static uword
-asn_user_by_key_key_sum (hash_t * h, uword key)
+asn_user_key_sum (hash_t * h, uword key, uword n_key_bytes)
 {
   asn_main_t * am = uword_to_pointer (h->user &~ 1, asn_main_t *);
   asn_rx_or_tx_t rt = h->user & 1;
   u8 * k = asn_user_key_to_mem (am, rt, key);
-  return hash_memory (k, STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key), /* hash_seed */ 0);
+  ASSERT (n_key_bytes <= STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key));
+  return hash_memory (k, n_key_bytes, /* hash_seed */ 0);
 }
 
 static uword
-asn_user_by_key_key_equal (hash_t * h, uword key1, uword key2)
+asn_user_key_sum_full (hash_t * h, uword key)
+{ return asn_user_key_sum (h, key, STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key)); }
+
+static uword
+asn_user_key_sum_7 (hash_t * h, uword key)
+{ return asn_user_key_sum (h, key, 7); }
+
+static uword
+asn_user_key_sum_8 (hash_t * h, uword key)
+{ return asn_user_key_sum (h, key, 8); }
+
+static uword
+asn_user_key_equal (hash_t * h, uword key1, uword key2, uword n_key_bytes)
 {
   asn_main_t * am = uword_to_pointer (h->user &~ 1, asn_main_t *);
   asn_rx_or_tx_t rt = h->user & 1;
   u8 * k1 = asn_user_key_to_mem (am, rt, key1);
   u8 * k2 = asn_user_key_to_mem (am, rt, key2);
-  return 0 == memcmp (k1, k2, STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key));
+  ASSERT (n_key_bytes <= STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key));
+  return 0 == memcmp (k1, k2, n_key_bytes);
 }
+
+static uword
+asn_user_key_equal_full (hash_t * h, uword key1, uword key2)
+{ return asn_user_key_equal (h, key1, key2, STRUCT_SIZE_OF (asn_user_t, crypto_keys.public.encrypt_key)); }
+
+static uword
+asn_user_key_equal_7 (hash_t * h, uword key1, uword key2)
+{ return asn_user_key_equal (h, key1, key2, 7); }
+
+static uword
+asn_user_key_equal_8 (hash_t * h, uword key1, uword key2)
+{ return asn_user_key_equal (h, key1, key2, 8); }
 
 asn_user_t *
 asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u8 * encrypt_key, u8 * auth_key)
@@ -116,6 +142,26 @@ asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u
   return au;
 }
 
+static void asn_user_hash_value_free (uword v)
+{
+  asn_user_hash_value_t hv;
+  hv.as_uword = v;
+  if (! hv.is_inline)
+    vec_free (hv.value_vector);
+}
+
+static void asn_user_hash_value_update (asn_user_hash_value_t * hv, uword value_to_add)
+{
+  uword * v = 0;
+  if (hv->is_inline)
+    vec_add1 (v, hv->inline_value);
+  else
+    v = hv->value_vector;
+
+  vec_add1 (v, value_to_add);
+  hv->value_vector = v;
+}
+
 asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
@@ -124,7 +170,7 @@ asn_new_user_with_type (asn_main_t * am,
 			asn_crypto_private_keys_t * with_private_keys)
 {
   asn_user_t * au;
-  asn_crypto_keys_t * k;
+  asn_crypto_keys_t * ck;
   asn_user_type_t * ut = pool_elt (asn_user_type_pool, user_type_index);
   uword * p;
 
@@ -145,13 +191,13 @@ asn_new_user_with_type (asn_main_t * am,
   else
     au = asn_user_alloc_with_type (ut);
 
-  k = &au->crypto_keys;
+  ck = &au->crypto_keys;
 
   if (with_public_keys)
     {
       /* With public keys implies that private keys are invalid. */
-      k->public = with_public_keys[0];
-      memset (&k->private, ~0, sizeof (k->private));
+      ck->public = with_public_keys[0];
+      memset (&ck->private, ~0, sizeof (ck->private));
       au->private_key_is_valid = 0;
     }
   else
@@ -159,33 +205,102 @@ asn_new_user_with_type (asn_main_t * am,
       /* Private keys specified? */
       if (with_private_keys)
 	{
-	  memcpy (&k->private.encrypt_key, with_private_keys->encrypt_key, sizeof (k->private.encrypt_key));
-	  memcpy (&k->private.auth_key, with_private_keys->auth_key, 32);
-	  asn_crypto_create_keys (&k->public, &k->private, /* want_random */ 0);
+	  memcpy (&ck->private.encrypt_key, with_private_keys->encrypt_key, sizeof (ck->private.encrypt_key));
+	  memcpy (&ck->private.auth_key, with_private_keys->auth_key, 32);
+	  asn_crypto_create_keys (&ck->public, &ck->private, /* want_random */ 0);
 	}
       else
 	/* Random private keys. */
-	asn_crypto_create_keys (&k->public, &k->private, /* want_random */ 1);
+	asn_crypto_create_keys (&ck->public, &ck->private, /* want_random */ 1);
 
       au->private_key_is_valid = 1;
     }
 
   if (! am->user_ref_by_public_encrypt_key[rt])
-    am->user_ref_by_public_encrypt_key[rt]
-      = hash_create2 (/* elts */ 0,
-                      /* user */ pointer_to_uword (am) | rt,
-                      /* value_bytes */ sizeof (uword),
-                      asn_user_by_key_key_sum,
-                      asn_user_by_key_key_equal,
-                      /* format pair/arg */
-                      0, 0);
+    {
+      am->user_ref_by_public_encrypt_key[rt]
+	= hash_create2 (/* elts */ 0,
+			/* user */ pointer_to_uword (am) | rt,
+			/* value_bytes */ sizeof (uword),
+			asn_user_key_sum_full,
+			asn_user_key_equal_full,
+			/* format pair/arg */
+			0, 0);
+      am->user_ref_by_public_encrypt_key_first_7_bytes[rt]
+	= hash_create2 (/* elts */ 0,
+			/* user */ pointer_to_uword (am) | rt,
+			/* value_bytes */ sizeof (asn_user_hash_value_t),
+			asn_user_key_sum_7,
+			asn_user_key_equal_7,
+			/* format pair/arg */
+			0, 0);
+      am->user_ref_by_public_encrypt_key_first_8_bytes[rt]
+	= hash_create2 (/* elts */ 0,
+			/* user */ pointer_to_uword (am) | rt,
+			/* value_bytes */ sizeof (asn_user_hash_value_t),
+			asn_user_key_sum_8,
+			asn_user_key_equal_8,
+			/* format pair/arg */
+			0, 0);
+    }
 
   {
     asn_user_ref_t r;
     r.type_index = ut->index;
     r.user_index = au->index;
-    uword v = asn_user_ref_as_uword (&r);
-    hash_set (am->user_ref_by_public_encrypt_key[rt], 1 + 2*v, v);
+    uword v, k, * p;
+    asn_user_hash_value_t hv;
+
+    v = asn_user_ref_as_uword (&r);
+    k = 1 + 2*v;
+
+    hash_set (am->user_ref_by_public_encrypt_key[rt], k, v);
+
+    p = hash_get (am->user_ref_by_public_encrypt_key_first_7_bytes[rt], k);
+    if (! p)
+      {
+	hv.is_inline = 1;
+	hv.inline_value = v;
+	hash_set (am->user_ref_by_public_encrypt_key_first_7_bytes[rt], k, hv.as_uword);
+      }
+    else
+      {
+	hv.as_uword = p[0];
+	asn_user_hash_value_update (&hv, v);
+	p[0] = hv.as_uword;
+      }
+
+    p = hash_get (am->user_ref_by_public_encrypt_key_first_8_bytes[rt], k);
+    if (! p)
+      {
+	hv.is_inline = 1;
+	hv.inline_value = v;
+	hash_set (am->user_ref_by_public_encrypt_key_first_8_bytes[rt], k, hv.as_uword);
+      }
+    else
+      {
+	hv.as_uword = p[0];
+	asn_user_hash_value_update (&hv, v);
+	p[0] = hv.as_uword;
+      }
+
+    if (CLIB_DEBUG > 0)
+      {
+	uword i, * rv;
+
+	rv = asn_users_matching_encrypt_key (am, rt, ck->public.encrypt_key, 7, 0);
+	for (i = 0; i < vec_len (rv); i++)
+	  if (rv[i] == v)
+	    break;
+	ASSERT (i < vec_len (rv));
+
+	rv = asn_users_matching_encrypt_key (am, rt, ck->public.encrypt_key, 8, rv);
+	for (i = 0; i < vec_len (rv); i++)
+	  if (rv[i] == v)
+	    break;
+	ASSERT (i < vec_len (rv));
+	vec_free (rv);
+      }
   }
 
   return au;
@@ -1244,7 +1359,18 @@ void asn_main_free (asn_main_t * am)
   {
     int i;
     for (i = 0; i < ARRAY_LEN (am->user_ref_by_public_encrypt_key); i++)
-      hash_free (am->user_ref_by_public_encrypt_key[i]);
+      {
+	hash_pair_t * p;
+	hash_free (am->user_ref_by_public_encrypt_key[i]);
+	hash_foreach_pair (p, am->user_ref_by_public_encrypt_key_first_7_bytes[i], ({
+	  asn_user_hash_value_free (p->value[0]);
+	}));
+	hash_free (am->user_ref_by_public_encrypt_key_first_7_bytes[i]);
+	hash_foreach_pair (p, am->user_ref_by_public_encrypt_key_first_8_bytes[i], ({
+	  asn_user_hash_value_free (p->value[0]);
+	}));
+	hash_free (am->user_ref_by_public_encrypt_key_first_8_bytes[i]);
+      }
   }
   vec_free (am->blob_name_vector_for_reuse);
   {
