@@ -627,7 +627,8 @@ static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
   return s;
 }
 
-static asn_crypto_state_t *
+#if 0
+asn_crypto_state_t *
 asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 {
   asn_crypto_state_t * cs;
@@ -651,6 +652,7 @@ asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
 
   return cs;
 }
+#endif
 
 #define _(f)                                                            \
   static clib_error_t *                                                 \
@@ -1281,23 +1283,61 @@ void asn_user_type_free (asn_user_type_t * t)
 void serialize_asn_user (serialize_main_t * m, va_list * va)
 {
   asn_user_t * u = va_arg (*va, asn_user_t *);
-  ASSERT (u);
+
+  serialize_likely_small_unsigned_integer (m, u->index);
+  serialize_likely_small_unsigned_integer (m, u->private_key_is_valid);
+  serialize_likely_small_unsigned_integer (m, u->current_marks_are_valid);
+  serialize_likely_small_unsigned_integer (m, u->user_type_index);
+
+  {
+    asn_crypto_public_keys_t * pk = &u->crypto_keys.public;
+    serialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
+    serialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+  }
+
+  {
+    int i;
+    for (i = 0; i < ARRAY_LEN (u->current_marks); i++)
+      {
+	if (u->current_marks_are_valid & (1 << i))
+	  serialize_data (m, u->current_marks[i].data_as_u8, sizeof (u->current_marks[i].data_as_u8));
+      }
+  }
 }
 
 void unserialize_asn_user (serialize_main_t * m, va_list * va)
 {
   asn_user_t * u = va_arg (*va, asn_user_t *);
-  ASSERT (u);
+
+  u->index = unserialize_likely_small_unsigned_integer (m);
+  u->private_key_is_valid = unserialize_likely_small_unsigned_integer (m);
+  u->current_marks_are_valid = unserialize_likely_small_unsigned_integer (m);
+  u->user_type_index = unserialize_likely_small_unsigned_integer (m);
+
+  {
+    asn_crypto_public_keys_t * pk = &u->crypto_keys.public;
+    unserialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
+    unserialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+  }
+
+  {
+    int i;
+    for (i = 0; i < ARRAY_LEN (u->current_marks); i++)
+      {
+	if (u->current_marks_are_valid & (1 << i))
+	  unserialize_data (m, u->current_marks[i].data_as_u8, sizeof (u->current_marks[i].data_as_u8));
+      }
+  }
 }
 
 void serialize_asn_user_type (serialize_main_t * m, va_list * va)
 {
   asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
-  ASSERT (t);
+  serialize (m, serialize_pool, t->user_pool, t->user_type_n_bytes, t->serialize_users);
 }
 
 void unserialize_asn_user_type (serialize_main_t * m, va_list * va)
 {
   asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
-  ASSERT (t);
+  unserialize (m, unserialize_pool, &t->user_pool, t->user_type_n_bytes, t->unserialize_users);
 }

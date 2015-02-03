@@ -203,7 +203,7 @@ typedef struct {
   /* Function to free a pool element. */
   void (* free_user) (struct asn_user_t * au);
 
-  serialize_function_t * serialize_user, * unserialize_user;
+  serialize_function_t * serialize_users, * unserialize_users;
 } asn_user_type_t;
 
 asn_user_type_t ** asn_user_type_pool;
@@ -282,6 +282,7 @@ typedef struct {
       i32 longitude_mul_1e6;
       i32 latitude_mul_1e6;
     };
+
     struct {
       /* 0x7X where X is ETA. */
       u8 place_and_eta;
@@ -289,6 +290,8 @@ typedef struct {
       /* First 7 bytes of place/event public key. */
       u8 place[7];
     };
+
+    u8 data_as_u8[8];
   };
 } asn_user_mark_response_t;
 
