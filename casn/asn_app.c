@@ -668,13 +668,13 @@ static void unserialize_asn_app_photo_message (serialize_main_t * m, va_list * v
 static void serialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
 {
   asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
-  ASSERT (msg);
+  ASSERT (! msg);
 }
 
 static void unserialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
 {
   asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
-  ASSERT (msg);
+  ASSERT (! msg);
 }
 
 void
