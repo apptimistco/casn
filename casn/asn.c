@@ -183,8 +183,19 @@ void asn_user_update_keys (asn_main_t * am,
     {
       /* With public keys implies that private keys are invalid. */
       ck->public = with_public_keys[0];
-      memset (&ck->private, ~0, sizeof (ck->private));
-      au->private_key_is_valid = 0;
+      if (with_private_keys)
+	{
+	  ck->private = with_private_keys[0];
+	  if (CLIB_DEBUG > 0)
+	    {
+	      asn_crypto_create_keys (&ck->public, &ck->private, /* want_random */ 0);
+	      ASSERT (! memcmp (ck->public.encrypt_key, with_public_keys->encrypt_key, sizeof (ck->public.encrypt_key)));
+	      ASSERT (! memcmp (ck->public.auth_key, with_public_keys->auth_key, sizeof (ck->public.auth_key)));
+	    }
+	}
+      else
+	memset (&ck->private, ~0, sizeof (ck->private));
+      au->private_key_is_valid = with_private_keys != 0;
     }
   else
     {
@@ -200,23 +211,23 @@ void asn_user_update_keys (asn_main_t * am,
 	asn_crypto_create_keys (&ck->public, &ck->private, /* want_random */ 1);
 
       au->private_key_is_valid = (with_private_keys != 0) || with_random_private_keys;
-
-      if (au->private_key_is_valid)
-        {
-          asn_client_socket_t * cs;
-          asn_client_socket_login_user_t * lu;
-          vec_foreach (cs, am->client_sockets)
-            {
-              vec_add2 (cs->login_users, lu, 1);
-              memset (lu, 0, sizeof (lu[0]));
-              lu->user_ref = r;
-              hash_set (cs->login_user_index_by_user_ref, r_as_uword, lu - cs->login_users);
-            }
-        }
     }
 
   if (! (with_public_keys || au->private_key_is_valid))
     return;
+
+  if (au->private_key_is_valid)
+    {
+      asn_client_socket_t * cs;
+      asn_client_socket_login_user_t * lu;
+      vec_foreach (cs, am->client_sockets)
+	{
+	  vec_add2 (cs->login_users, lu, 1);
+	  memset (lu, 0, sizeof (lu[0]));
+	  lu->user_ref = r;
+	  hash_set (cs->login_user_index_by_user_ref, r_as_uword, lu - cs->login_users);
+	}
+    }
 
   if (! am->user_ref_by_public_encrypt_key[rt])
     {
@@ -1166,23 +1177,29 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   struct {
     u8 private_encrypt_key[crypto_box_private_key_bytes];
     u8 private_auth_key[crypto_sign_private_key_bytes];
+    u8 public_encrypt_key[crypto_box_public_key_bytes];
+    u8 public_auth_key[crypto_sign_public_key_bytes];
   } * keys = (void *) ack->data;
-  asn_crypto_private_keys_t pk;
+  asn_crypto_keys_t ck;
   asn_user_t * au;
 
-  memcpy (pk.encrypt_key, keys->private_encrypt_key, sizeof (pk.encrypt_key));
-  memcpy (pk.auth_key, keys->private_auth_key, sizeof (pk.auth_key));
+  ASSERT (n_bytes_ack_data == sizeof (keys[0]));
+
+  memcpy (ck.private.encrypt_key, keys->private_encrypt_key, sizeof (ck.private.encrypt_key));
+  memcpy (ck.private.auth_key, keys->private_auth_key, sizeof (ck.private.auth_key));
+  memcpy (ck.public.encrypt_key, keys->public_encrypt_key, sizeof (ck.public.encrypt_key));
+  memcpy (ck.public.auth_key, keys->public_auth_key, sizeof (ck.public.auth_key));
 
   au = asn_user_by_ref (&am->self_user_ref);
   if (au)
     asn_user_update_keys (am, ASN_TX, au,
-                          /* with_public_keys */ 0,
-                          /* with_private_keys */ &pk,
+                          /* with_public_keys */ &ck.public,
+                          /* with_private_keys */ &ck.private,
                           /* with_random_private_keys */ 0);
   else
     au = asn_new_user_with_type (am, ASN_TX, nah->user_type_index,
-                                 /* with_public_keys */ 0,
-                                 /* with_private_keys */ &pk,
+                                 /* with_public_keys */ &ck.public,
+                                 /* with_private_keys */ &ck.private,
                                  /* with_random_private_keys */ 0);
 
   if (am->verbose)
