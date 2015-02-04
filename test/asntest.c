@@ -175,7 +175,10 @@ int test_asn_main (unformat_input_t * input)
       asn_user_t * au;
       memcpy (pk.encrypt_key, tm->user_keys.private_encrypt_key, vec_len (tm->user_keys.private_encrypt_key));
       memcpy (pk.auth_key, tm->user_keys.private_auth_key, vec_len (tm->user_keys.private_auth_key));
-      au = asn_new_user_with_type (am, ASN_TX, am->self_user_ref.type_index, /* with_public_keys */ 0, &pk);
+      au = asn_new_user_with_type (am, ASN_TX, am->self_user_ref.type_index,
+                                   /* with_public_keys */ 0,
+                                   /* with_private_keys */ &pk,
+                                   /* with_random_private_keys */ 0);
       am->self_user_ref.user_index = au->index;
     }
 

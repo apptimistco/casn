@@ -289,13 +289,35 @@ typedef struct {
   asn_app_user_type_t user_types[ASN_APP_N_USER_TYPE];
 } asn_app_main_t;
 
+always_inline asn_app_user_t *
+asn_app_user_with_index (asn_app_main_t * am, u32 index)
+{
+  asn_app_user_t * us = am->user_types[ASN_APP_USER_TYPE_user].user_type.user_pool;
+  return pool_elt_at_index (us, index);
+}
+
+always_inline asn_app_user_group_t *
+asn_app_user_group_with_index (asn_app_main_t * am, u32 index)
+{
+  asn_app_user_group_t * us = am->user_types[ASN_APP_USER_TYPE_user_group].user_type.user_pool;
+  return pool_elt_at_index (us, index);
+}
+
+always_inline asn_app_event_t *
+asn_app_event_with_index (asn_app_main_t * am, u32 index)
+{
+  asn_app_event_t * us = am->user_types[ASN_APP_USER_TYPE_event].user_type.user_pool;
+  return pool_elt_at_index (us, index);
+}
+
 always_inline void *
 asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
 {
   asn_user_type_t * ut = &am->user_types[t].user_type;
   asn_user_t * au = asn_new_user_with_type (&am->asn_main, ASN_TX, ut->index,
 					    /* with_public_keys */ 0,
-					    /* with_private_keys */ 0);
+					    /* with_private_keys */ 0,
+                                            /* with_random_private_keys */ 0);
   return (void *) au - ut->user_type_offset_of_asn_user;
 }
 

@@ -621,7 +621,15 @@ asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
 			u32 user_type_index,
 			asn_crypto_public_keys_t * with_public_keys,
-			asn_crypto_private_keys_t * with_private_keys);
+			asn_crypto_private_keys_t * with_private_keys,
+                        u32 with_random_private_keys);
+
+void asn_user_update_keys (asn_main_t * am,
+                           asn_rx_or_tx_t rt,
+                           asn_user_t * au,
+                           asn_crypto_public_keys_t * with_public_keys,
+                           asn_crypto_private_keys_t * with_private_keys,
+                           u32 with_random_private_keys);
 
 asn_user_t *
 asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u8 * encrypt_key, u8 * auth_key);

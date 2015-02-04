@@ -754,7 +754,7 @@ serialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
 static void
 unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
 {
-  asn_app_gen_user_t * u = va_arg (*va, asn_app_user_t *);
+  asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
   asn_user_type_t * asn_ut;
   asn_app_user_type_t * ut;
   unserialize (m, unserialize_asn_user, &u->asn_user);
