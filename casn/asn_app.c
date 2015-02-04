@@ -970,4 +970,7 @@ void asn_app_main_init (asn_app_main_t * am)
     am->user_types[ASN_APP_USER_TYPE_event].user_type = t;
     asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_event].user_type);
   }
+
+  am->asn_main.self_user_ref.user_index = ~0;
+  am->asn_main.self_user_ref.type_index = am->user_types[ASN_APP_USER_TYPE_user].user_type.index;
 }

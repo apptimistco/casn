@@ -173,6 +173,8 @@ asn_new_user_with_type (asn_main_t * am,
   asn_crypto_keys_t * ck;
   asn_user_type_t * ut = pool_elt (asn_user_type_pool, user_type_index);
   uword * p;
+  asn_user_ref_t r;
+  uword r_as_uword;
 
   /* See if user already exists. */
   if (with_public_keys
@@ -190,6 +192,10 @@ asn_new_user_with_type (asn_main_t * am,
     }
   else
     au = asn_user_alloc_with_type (ut);
+
+  r.type_index = ut->index;
+  r.user_index = au->index;
+  r_as_uword = asn_user_ref_as_uword (&r);
 
   ck = &au->crypto_keys;
 
@@ -214,6 +220,18 @@ asn_new_user_with_type (asn_main_t * am,
 	asn_crypto_create_keys (&ck->public, &ck->private, /* want_random */ 1);
 
       au->private_key_is_valid = 1;
+
+      {
+	asn_client_socket_t * cs;
+	asn_client_socket_login_user_t * lu;
+	vec_foreach (cs, am->client_sockets)
+	  {
+	    vec_add2 (cs->login_users, lu, 1);
+	    memset (lu, 0, sizeof (lu[0]));
+	    lu->user_ref = r;
+	    hash_set (cs->login_user_index_by_user_ref, r_as_uword, lu - cs->login_users);
+	  }
+      }
     }
 
   if (! am->user_ref_by_public_encrypt_key[rt])
@@ -245,28 +263,24 @@ asn_new_user_with_type (asn_main_t * am,
     }
 
   {
-    asn_user_ref_t r;
-    r.type_index = ut->index;
-    r.user_index = au->index;
-    uword v, k, * p;
+    uword k, * p;
     asn_user_hash_value_t hv;
 
-    v = asn_user_ref_as_uword (&r);
-    k = 1 + 2*v;
+    k = 1 + 2*r_as_uword;
 
-    hash_set (am->user_ref_by_public_encrypt_key[rt], k, v);
+    hash_set (am->user_ref_by_public_encrypt_key[rt], k, r_as_uword);
 
     p = hash_get (am->user_ref_by_public_encrypt_key_first_7_bytes[rt], k);
     if (! p)
       {
 	hv.is_inline = 1;
-	hv.inline_value = v;
+	hv.inline_value = r_as_uword;
 	hash_set (am->user_ref_by_public_encrypt_key_first_7_bytes[rt], k, hv.as_uword);
       }
     else
       {
 	hv.as_uword = p[0];
-	asn_user_hash_value_update (&hv, v);
+	asn_user_hash_value_update (&hv, r_as_uword);
 	p[0] = hv.as_uword;
       }
 
@@ -274,13 +288,13 @@ asn_new_user_with_type (asn_main_t * am,
     if (! p)
       {
 	hv.is_inline = 1;
-	hv.inline_value = v;
+	hv.inline_value = r_as_uword;
 	hash_set (am->user_ref_by_public_encrypt_key_first_8_bytes[rt], k, hv.as_uword);
       }
     else
       {
 	hv.as_uword = p[0];
-	asn_user_hash_value_update (&hv, v);
+	asn_user_hash_value_update (&hv, r_as_uword);
 	p[0] = hv.as_uword;
       }
 
@@ -290,13 +304,13 @@ asn_new_user_with_type (asn_main_t * am,
 
 	rv = asn_users_matching_encrypt_key (am, rt, ck->public.encrypt_key, 7, 0);
 	for (i = 0; i < vec_len (rv); i++)
-	  if (rv[i] == v)
+	  if (rv[i] == r_as_uword)
 	    break;
 	ASSERT (i < vec_len (rv));
 
 	rv = asn_users_matching_encrypt_key (am, rt, ck->public.encrypt_key, 8, rv);
 	for (i = 0; i < vec_len (rv); i++)
-	  if (rv[i] == v)
+	  if (rv[i] == r_as_uword)
 	    break;
 	ASSERT (i < vec_len (rv));
 	vec_free (rv);
@@ -406,7 +420,7 @@ asn_socket_tx_add_pdu (asn_socket_t * as, asn_pdu_id_t id, u32 n_header_bytes)
   memset (h, 0, sizeof (h[0]));
   h->version = 0;
   h->id = id;
-  h->casn_request_id.id = id;	/* remote will echo */
+  h->generic_request_id.id = id;	/* remote will echo */
   return h;
 }
 
@@ -495,7 +509,7 @@ static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t
     asn_exec_ack_handler_t ** ah;
     pool_get (as->exec_ack_handler_pool, ah);
     ah[0] = ack_handler;
-    h->casn_request_id.ack_handler_index = ah - as->exec_ack_handler_pool;
+    h->exec_request_id.ack_handler_index = ah - as->exec_ack_handler_pool;
   }
 
   return asn_socket_tx (as);
@@ -596,17 +610,40 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 {
   clib_error_t * error = 0;
   uword is_error = ack->status != ASN_ACK_PDU_STATUS_success;
-  asn_pdu_id_t acked_pdu_id = ack->header.casn_request_id.id;
+  asn_pdu_id_t acked_pdu_id = ack->header.generic_request_id.id;
 
   switch (acked_pdu_id)
     {
     case ASN_PDU_login:
-    case ASN_PDU_resume: {
-      if (! is_error && acked_pdu_id == ASN_PDU_login)
+    case ASN_PDU_resume:
+      if (acked_pdu_id == ASN_PDU_login)
 	{
-	  as->session_state = ASN_SESSION_STATE_established;
-	  if (ack->header.casn_request_id.is_self_user_login == 1)
-	    as->self_user_login_in_progress = 0;
+	  asn_user_ref_t r;
+	  asn_user_t * au;
+	  asn_client_socket_t * cs;
+	  asn_client_socket_login_user_t * lu;
+
+	  r.type_index = ack->header.login_request_id.user_type_index;
+	  r.user_index = ack->header.login_request_id.user_index;
+
+	  au = asn_user_by_ref (&r);
+	  if (! au)
+	    return clib_error_return (0, "unknown user with type %d index %d", r.type_index, r.user_index);
+
+	  cs = vec_elt_at_index (am->client_sockets, as->client_socket_index);
+	  lu = asn_client_socket_login_user_by_ref (cs, &r);
+	  if (! lu)
+	    return clib_error_return (0, "unknown login user with type %d index %d", r.type_index, r.user_index);
+
+	  if (! is_error)
+	    {
+	      as->session_state = ASN_SESSION_STATE_established;
+	      ASSERT (! lu->is_logged_in);
+	      lu->is_logged_in = 1;
+	    }
+
+	  ASSERT (lu->login_in_progress);
+	  lu->login_in_progress = 0;
 	}
 
       /* Login/resume response contains new emphemeral public key and nonce. */
@@ -617,12 +654,10 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	} * rekey = (void *) ack->data;
 	asn_socket_crypto_set_peer (as, rekey->public_encrypt_key, rekey->nonce);
       }
-
       break;
-    }
 
     case ASN_PDU_exec: {
-      u32 ai = ack->header.casn_request_id.ack_handler_index;
+      u32 ai = ack->header.exec_request_id.ack_handler_index;
       asn_exec_ack_handler_t * ah;
 
       if (pool_is_free_index (as->exec_ack_handler_pool, ai))
@@ -677,7 +712,7 @@ static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
   u32 n_bytes = va_arg (*va, u32);
 
   s = format (s, "request: %U, status: %U",
-              format_asn_pdu_id, ack->header.casn_request_id.id,
+              format_asn_pdu_id, ack->header.generic_request_id.id,
               format_asn_ack_pdu_status, ack->status);
 
   if (n_bytes > sizeof (ack[0]))
@@ -802,16 +837,6 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
     }
 
   return s;
-}
-
-clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au)
-{
-  asn_pdu_login_t * l;
-  l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
-  memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
-  memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
-  l->header.casn_request_id.is_self_user_login = asn_is_user_for_ref (au, &am->self_user_ref);
-  return asn_socket_tx (as);
 }
 
 static clib_error_t *
@@ -1044,7 +1069,10 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
     if (client_socket_index == ~0)
       vec_add2 (am->client_sockets, cs, 1);
     else
-      cs = vec_elt_at_index (am->client_sockets, client_socket_index);
+      {
+	cs = vec_elt_at_index (am->client_sockets, client_socket_index);
+	asn_client_socket_free (cs);
+      }
 
     as->client_socket_index = cs - am->client_sockets;
     cs->socket_index = ws->index;
@@ -1052,6 +1080,39 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
     cs->socket_type = ASN_SOCKET_TYPE_websocket;
     if (is_first_connection_attempt)
       cs->timestamps.open = unix_time_now ();
+
+    {
+      uword ui, ti;
+      void * u;
+      asn_user_type_t * ut;
+      asn_user_t * au;
+      asn_client_socket_login_user_t * lu;
+
+      vec_foreach_index (ti, asn_user_type_pool)
+	{
+	  if (pool_is_free_index (asn_user_type_pool, ti))
+	    continue;
+	  ut = asn_user_type_pool[ti];
+	  u = ut->user_pool;
+	  vec_foreach_index (ui, ut->user_pool)
+	    {
+	      if (pool_is_free_index (ut->user_pool, ui))
+		continue;
+
+	      au = u + ut->user_type_offset_of_asn_user;
+	      if (! au->private_key_is_valid)
+		continue;
+
+	      vec_add2 (cs->login_users, lu, 1);
+	      memset (lu, 0, sizeof (lu[0]));
+	      lu->user_ref.type_index = ti;
+	      lu->user_ref.user_index = ui;
+	      hash_set (cs->login_user_index_by_user_ref, asn_user_ref_as_uword (&lu->user_ref), lu - cs->login_users);
+	    }
+
+	  u += ut->user_type_n_bytes;
+	}
+    }
 
     if (am->verbose)
       {
@@ -1119,6 +1180,7 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
 
   if (nah->is_self_user)
     {
+      ASSERT (am->self_user_ref.user_index == ~0);
       am->self_user_ref.type_index = nah->user_type_index;
       am->self_user_ref.user_index = au->index;
     }
@@ -1126,29 +1188,42 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   return 0;
 }
 
-clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as)
+clib_error_t * asn_request_new_user_with_type (asn_main_t * am, asn_socket_t * as, u32 user_type_index, u32 is_self_user)
 {
-  clib_error_t * error = 0;
-  asn_user_t * au_self = asn_user_by_ref (&am->self_user_ref);
+  asn_exec_newuser_ack_handler_t * nah = asn_exec_ack_handler_create_with_function_in_container
+    (asn_socket_exec_newuser_ack_handler,
+     sizeof (nah[0]),
+     STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
+  nah->user_type_index = am->self_user_ref.type_index;
+  nah->is_self_user = is_self_user;
+  return asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
+}
 
-  if (! au_self && ! as->unknown_self_user_newuser_in_progress)
-    {
-      asn_exec_newuser_ack_handler_t * nah = asn_exec_ack_handler_create_with_function_in_container
-	(asn_socket_exec_newuser_ack_handler,
-	 sizeof (nah[0]),
-	 STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
-      nah->user_type_index = am->self_user_ref.type_index;
-      nah->is_self_user = 1;
-      error = asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
-      as->unknown_self_user_newuser_in_progress = error == 0;
-    }
-  else if (au_self && ! as->self_user_login_in_progress)
-    {
-      error = asn_socket_login_for_user (am, as, au_self);
-      as->self_user_login_in_progress = error == 0;
-    }
+clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au)
+{
+  asn_pdu_login_t * l;
+  l = asn_socket_tx_add_pdu (as, ASN_PDU_login, sizeof (l[0]));
+  memcpy (l->key, au->crypto_keys.public.encrypt_key, sizeof (l->key));
+  memcpy (l->signature, au->crypto_keys.public.self_signed_encrypt_key, sizeof (l->signature));
+  l->header.login_request_id.user_type_index = au->user_type_index;
+  l->header.login_request_id.user_index = au->index;
 
-  return error;
+  {
+    asn_client_socket_t * cs;
+    asn_client_socket_login_user_t * lu;
+    asn_user_ref_t r;
+
+    cs = vec_elt_at_index (am->client_sockets, as->client_socket_index);
+    r.type_index = au->user_type_index;
+    r.user_index = au->index;
+    lu = asn_client_socket_login_user_by_ref (cs, &r);
+    
+    ASSERT (lu);
+    ASSERT (! lu->login_in_progress);
+    lu->login_in_progress = 1;
+  }
+
+  return asn_socket_tx (as);
 }
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler_function, char * fmt, ...)
@@ -1204,13 +1279,31 @@ clib_error_t * asn_poll_for_input (asn_main_t * am)
 
       ASSERT (websocket_connection_type (ws) == WEBSOCKET_CONNECTION_TYPE_client);
       if (! ws->handshake_rx)
-	goto done;
+	continue;
 
-      if (as->session_state == ASN_SESSION_STATE_opened)
+      if (as->session_state != ASN_SESSION_STATE_opened)
+	continue;
+
+      if (vec_len (cs->login_users) == 0 && ! as->unknown_self_user_newuser_in_progress)
 	{
-	  error = asn_login_for_self_user (am, as);
+	  as->unknown_self_user_newuser_in_progress = 1;
+	  error = asn_request_new_user_with_type (am, as, am->self_user_ref.type_index, /* is_self_user */ 1);
 	  if (error)
 	    goto done;
+	}
+      else
+	{
+	  asn_client_socket_login_user_t * lu;
+	  vec_foreach (lu, cs->login_users)
+	    {
+	      if (! lu->login_in_progress)
+		{
+		  asn_user_t * au = asn_user_by_ref (&lu->user_ref);
+		  error = asn_socket_login_for_user (am, as, au);
+		  if (error)
+		    goto done;
+		}
+	    }
 	}
     }
 

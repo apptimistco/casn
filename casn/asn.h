@@ -96,12 +96,24 @@ typedef CLIB_PACKED (struct {
     struct {
       asn_pdu_id_t id : 8;
 
-      u8 is_self_user_login;
+      u8 unused[7];
+    } generic_request_id;
 
-      u8 unused[2];
+    struct {
+      asn_pdu_id_t id : 8;
+
+      u8 unused[3];
 
       u32 ack_handler_index;
-    } casn_request_id;
+    } exec_request_id;
+
+    struct {
+      asn_pdu_id_t id : 8;
+
+      u32 user_type_index : 24;
+
+      u32 user_index;
+    } login_request_id;
 
     u8 blob_magic[8];           /* "asnmagic\0" for blobs. */
   };
@@ -424,9 +436,6 @@ typedef struct asn_socket_t {
   /* Currently received PDU we're working on. */
   u8 * rx_pdu;
 
-  /* Hash table which has entries for all user indices logged in on this socket. */
-  uword * users_logged_in_this_socket;
-
   asn_crypto_ephemeral_keys_t ephemeral_keys;
 
   /* Nonce and shared secret. */
@@ -439,7 +448,6 @@ typedef struct asn_socket_t {
   u32 client_socket_index;
 
   u32 unknown_self_user_newuser_in_progress : 1;
-  u32 self_user_login_in_progress : 1;
 } asn_socket_t;
 
 always_inline void
@@ -450,7 +458,6 @@ asn_socket_free (asn_socket_t * as)
   vec_foreach (p, as->tx_pdus)
     asn_pdu_free (p);
   vec_free (as->tx_pdus);
-  hash_free (as->users_logged_in_this_socket);
 }
 
 typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);
@@ -469,6 +476,12 @@ typedef enum {
 } asn_socket_type_t;
 
 typedef struct {
+  u8 is_logged_in;
+  u8 login_in_progress;
+  asn_user_ref_t user_ref;
+} asn_client_socket_login_user_t;
+
+typedef struct {
   /* Index in pool. */
   u32 socket_index;
 
@@ -479,11 +492,27 @@ typedef struct {
   } timestamps;
 
   u8 * socket_config;
+
+  asn_client_socket_login_user_t * login_users;
+
+  uword * login_user_index_by_user_ref;
 } asn_client_socket_t;
+
+always_inline asn_client_socket_login_user_t *
+asn_client_socket_login_user_by_ref (asn_client_socket_t * cs, asn_user_ref_t * r)
+{
+  uword k = asn_user_ref_as_uword (r);
+  uword * p = hash_get (cs->login_user_index_by_user_ref, k);
+  return p ? vec_elt_at_index (cs->login_users, p[0]) : 0;
+}
 
 always_inline void
 asn_client_socket_free (asn_client_socket_t * s)
-{ vec_free (s->socket_config); }
+{
+  vec_free (s->socket_config);
+  hash_free (s->login_user_index_by_user_ref);
+  vec_free (s->login_users);
+}
 
 typedef struct asn_main_t {
   websocket_main_t websocket_main;
@@ -601,8 +630,6 @@ void asn_user_type_free (asn_user_type_t * t);
 
 clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
-
-clib_error_t * asn_login_for_self_user (asn_main_t * am, asn_socket_t * as);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am);
