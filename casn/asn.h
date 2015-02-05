@@ -13,8 +13,7 @@ typedef struct {
   u8 auth_key[crypto_sign_public_key_bytes];
   u8 encrypt_key[crypto_box_public_key_bytes];
 
-  /* Signature of public encrypt key signed by auth key.
-     Known after login request. */
+  /* Signature of public encrypt key signed by auth key. */
   u8 self_signed_encrypt_key[crypto_sign_signature_bytes];
 } asn_crypto_public_keys_t;
 
@@ -205,6 +204,8 @@ typedef struct {
   /* Index for this type.  Set when registering. */
   u32 index;
 
+  u32 was_registered;
+
   /* Size and offset of asn_user_t in super type. */
   u32 user_type_n_bytes;
   u32 user_type_offset_of_asn_user;
@@ -215,7 +216,11 @@ typedef struct {
   /* Function to free a pool element. */
   void (* free_user) (struct asn_user_t * au);
 
+  /* Pool serialize/unserialize functions. */
   serialize_function_t * serialize_users, * unserialize_users;
+
+  /* Called when exec newuser successfully completes. */
+  void (* did_set_user_keys) (struct asn_user_t * au);
 } asn_user_type_t;
 
 asn_user_type_t ** asn_user_type_pool;
@@ -224,6 +229,8 @@ always_inline uword
 asn_register_user_type (asn_user_type_t * t)
 {
   uword ti = pool_set_elt (asn_user_type_pool, t);
+  ASSERT (! t->was_registered);
+  t->was_registered = 1;
   t->index = ti;
   return ti;
 }  
@@ -640,11 +647,12 @@ clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handle
 clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
-clib_error_t * asn_poll_for_input (asn_main_t * am);
+clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 
 clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude);
 
 format_function_t format_asn_user_type, format_asn_user_mark_response;
+serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
 

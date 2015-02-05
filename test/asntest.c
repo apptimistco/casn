@@ -205,7 +205,7 @@ int test_asn_main (unformat_input_t * input)
       asn_client_socket_t * cs;
       f64 now;
 
-      error = asn_poll_for_input (am);
+      error = asn_poll_for_input (am, 10e-3);
       if (error)
 	clib_error_report (error);
 

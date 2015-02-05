@@ -558,6 +558,15 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
   asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
   ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice);
   asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
+
+  /* 0 is always reserved for unset oneof attributes. */
+  if (i == 0)
+    {
+      if (vec_len (a->oneof_values) > 0)
+        ASSERT (a->oneof_values[0] == 0);
+      return 0;
+    }
+
   switch (vt)
     {
     case ASN_APP_ATTRIBUTE_TYPE_u8:
@@ -840,16 +849,24 @@ unserialize_asn_app_event (serialize_main_t * m, va_list * va)
 
 static void serialize_asn_app_user_type (serialize_main_t * m, va_list * va)
 {
-  asn_app_user_type_t * t = va_arg (*va, asn_app_user_type_t *);
-  serialize (m, serialize_asn_app_attribute_main, &t->attribute_main);
-  serialize (m, serialize_asn_user_type, &t->user_type);
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  asn_app_user_type_enum_t t = va_arg (*va, int);
+  asn_app_user_type_t * ut;
+  ASSERT (t < ARRAY_LEN (am->user_types));
+  ut = am->user_types + t;
+  serialize (m, serialize_asn_app_attribute_main, &ut->attribute_main);
+  serialize (m, serialize_asn_user_type, &am->asn_main, &ut->user_type);
 }
 
 static void unserialize_asn_app_user_type (serialize_main_t * m, va_list * va)
 {
-  asn_app_user_type_t * t = va_arg (*va, asn_app_user_type_t *);
-  unserialize (m, unserialize_asn_app_attribute_main, &t->attribute_main);
-  unserialize (m, unserialize_asn_user_type, &t->user_type);
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  asn_app_user_type_enum_t t = va_arg (*va, int);
+  asn_app_user_type_t * ut;
+  ASSERT (t < ARRAY_LEN (am->user_types));
+  ut = am->user_types + t;
+  unserialize (m, unserialize_asn_app_attribute_main, &ut->attribute_main);
+  unserialize (m, unserialize_asn_user_type, &am->asn_main, &ut->user_type);
 }
 
 static char * asn_app_main_serialize_magic = "asn_app_main v0";
@@ -861,8 +878,9 @@ serialize_asn_app_main (serialize_main_t * m, va_list * va)
   int i;
 
   serialize_magic (m, asn_app_main_serialize_magic, strlen (asn_app_main_serialize_magic));
+  serialize (m, serialize_asn_main, &am->asn_main);
   for (i = 0; i < ARRAY_LEN (am->user_types); i++)
-    serialize (m, serialize_asn_app_user_type, &am->user_types[i]);
+    serialize (m, serialize_asn_app_user_type, am, i);
 }
 
 void
@@ -874,9 +892,9 @@ unserialize_asn_app_main (serialize_main_t * m, va_list * va)
   unserialize_check_magic (m, asn_app_main_serialize_magic,
 			   strlen (asn_app_main_serialize_magic),
 			   "asn_app_main");
-
+  unserialize (m, unserialize_asn_main, &am->asn_main);
   for (i = 0; i < ARRAY_LEN (am->user_types); i++)
-    unserialize (m, unserialize_asn_app_user_type, &am->user_types[i]);
+    unserialize (m, unserialize_asn_app_user_type, am, i);
 }
 
 clib_error_t * asn_app_main_write_to_file (asn_app_main_t * am, char * unix_file)
@@ -929,48 +947,48 @@ static void asn_app_free_event (asn_user_t * au)
 
 void asn_app_main_init (asn_app_main_t * am)
 {
-  {
-    asn_user_type_t t = {
-      .name = "actual user",
-      .user_type_n_bytes = sizeof (asn_app_user_t),
-      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_t, gen_user.asn_user),
-      .free_user = asn_app_free_user,
-      .serialize_users = serialize_asn_app_user,
-      .unserialize_users = unserialize_asn_app_user,
-    };
+  if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)
+    {
+      asn_user_type_t t = {
+        .name = "actual user",
+        .user_type_n_bytes = sizeof (asn_app_user_t),
+        .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_t, gen_user.asn_user),
+        .free_user = asn_app_free_user,
+        .serialize_users = serialize_asn_app_user,
+        .unserialize_users = unserialize_asn_app_user,
+      };
 
-    am->user_types[ASN_APP_USER_TYPE_user].user_type = t;
-    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user].user_type);
-  }
+      am->user_types[ASN_APP_USER_TYPE_user].user_type = t;
+      asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user].user_type);
+    }
 
-  {
-    asn_user_type_t t = {
-      .name = "user group",
-      .user_type_n_bytes = sizeof (asn_app_user_group_t),
-      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_group_t, gen_user.asn_user),
-      .free_user = asn_app_free_user_group,
-      .serialize_users = serialize_asn_app_user_group,
-      .unserialize_users = unserialize_asn_app_user_group,
-    };
+  if (! am->user_types[ASN_APP_USER_TYPE_user_group].user_type.was_registered)
+    {
+      asn_user_type_t t = {
+        .name = "user group",
+        .user_type_n_bytes = sizeof (asn_app_user_group_t),
+        .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_user_group_t, gen_user.asn_user),
+        .free_user = asn_app_free_user_group,
+        .serialize_users = serialize_asn_app_user_group,
+        .unserialize_users = unserialize_asn_app_user_group,
+      };
 
-    am->user_types[ASN_APP_USER_TYPE_user_group].user_type = t;
-    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user_group].user_type);
-  }
+      am->user_types[ASN_APP_USER_TYPE_user_group].user_type = t;
+      asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_user_group].user_type);
+    }
 
-  {
-    asn_user_type_t t = {
-      .name = "event",
-      .user_type_n_bytes = sizeof (asn_app_event_t),
-      .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_event_t, gen_user.asn_user),
-      .free_user = asn_app_free_event,
-      .serialize_users = serialize_asn_app_event,
-      .unserialize_users = unserialize_asn_app_event,
-    };
+  if (! am->user_types[ASN_APP_USER_TYPE_event].user_type.was_registered)
+    {
+      asn_user_type_t t = {
+        .name = "event",
+        .user_type_n_bytes = sizeof (asn_app_event_t),
+        .user_type_offset_of_asn_user = STRUCT_OFFSET_OF (asn_app_event_t, gen_user.asn_user),
+        .free_user = asn_app_free_event,
+        .serialize_users = serialize_asn_app_event,
+        .unserialize_users = unserialize_asn_app_event,
+      };
 
-    am->user_types[ASN_APP_USER_TYPE_event].user_type = t;
-    asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_event].user_type);
-  }
-
-  am->asn_main.self_user_ref.user_index = ~0;
-  am->asn_main.self_user_ref.type_index = am->user_types[ASN_APP_USER_TYPE_user].user_type.index;
+      am->user_types[ASN_APP_USER_TYPE_event].user_type = t;
+      asn_register_user_type (&am->user_types[ASN_APP_USER_TYPE_event].user_type);
+    }
 }
