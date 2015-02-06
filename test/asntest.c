@@ -231,7 +231,11 @@ int test_asn_main (unformat_input_t * input)
 	      }
 
 	      if (1) {
-		error = asn_mark_position (as, -37.1234567, 122.89012345);
+                asn_position_on_earth_t pos = {
+                  .latitude = 37.1234567,
+                  .longitude = -122.89012345,
+                };
+		error = asn_mark_position (as, pos);
 		if (error)
 		  clib_error_report (error);
 	      }

@@ -19,10 +19,6 @@ always_inline void asn_app_photo_free (asn_app_photo_t * p)
 }
 
 typedef struct {
-  f64 longitude, latitude;
-} asn_app_position_on_earth_t;
-
-typedef struct {
   u8 * unique_id;		/* => name of location blob */
   u8 ** address_lines;
   u8 * thumbnail_as_image_data;
@@ -196,7 +192,7 @@ typedef struct {
   uword * user_friends;
   u32 recent_check_in_location_index;
   asn_app_location_t recent_check_in_locations[32];
-  asn_app_position_on_earth_t position_on_earth;
+  asn_position_on_earth_t position_on_earth;
   uword * events_rsvpd_for_user;
 } asn_app_user_t;
 
@@ -248,7 +244,7 @@ typedef struct {
   /* Location of event. */
   asn_app_location_t location;
 
-  asn_app_position_on_earth_t position_on_earth;
+  asn_position_on_earth_t position_on_earth;
 
   /* Hash of user indices that have RSVPd for this event. */
   uword * users_rsvpd_for_event;

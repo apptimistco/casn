@@ -221,6 +221,9 @@ typedef struct {
 
   /* Called when exec newuser successfully completes. */
   void (* did_set_user_keys) (struct asn_user_t * au);
+
+  void (* did_learn_new_user) (struct asn_user_t * au, uword place_mark_did_change);
+  void (* user_mark_did_change) (struct asn_user_t * au, uword place_mark_did_change);
 } asn_user_type_t;
 
 asn_user_type_t ** asn_user_type_pool;
@@ -323,6 +326,31 @@ asn_user_mark_response_place_eta (asn_user_mark_response_t * r)
 {
   ASSERT (asn_user_mark_response_is_place (r));
   return r->place_and_eta & 0xf;
+}
+
+typedef struct {
+  f64 longitude, latitude;
+} asn_position_on_earth_t;
+
+always_inline asn_user_mark_response_t
+asn_user_mark_response_for_position (asn_position_on_earth_t pos)
+{
+  asn_user_mark_response_t r;
+  ASSERT (pos.longitude >= -180 && pos.longitude <= +180);
+  ASSERT (pos.latitude >= -90 && pos.latitude <= +90);
+  r.longitude_mul_1e6 = clib_host_to_net_i32 (1e6 * pos.longitude);
+  r.latitude_mul_1e6 = clib_host_to_net_i32 (1e6 * pos.latitude);
+  ASSERT (! asn_user_mark_response_is_place (&r));
+  return r;
+}
+
+always_inline asn_position_on_earth_t
+asn_user_mark_response_position (asn_user_mark_response_t * r)
+{
+  asn_position_on_earth_t p;
+  p.longitude = 1e-6 * clib_net_to_host_i32 (r->longitude_mul_1e6);
+  p.latitude = 1e-6 * clib_net_to_host_i32 (r->latitude_mul_1e6);
+  return p;
 }
 
 typedef struct asn_user_t 
@@ -649,7 +677,8 @@ clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * fu
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 
-clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude);
+clib_error_t * asn_mark_position (asn_socket_t * as, asn_position_on_earth_t pos);
+void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos);
 
 format_function_t format_asn_user_type, format_asn_user_mark_response;
 serialize_function_t serialize_asn_main, unserialize_asn_main;

@@ -367,9 +367,11 @@ u8 * format_asn_user_mark_response (u8 * s, va_list * va)
     s = format (s, "place %U eta %d", format_hex_bytes, r->place, sizeof (r->place),
 		asn_user_mark_response_place_eta (r));
   else
-    s = format (s, "location %.9f %.9f",
-		1e-6 * clib_net_to_host_i32 (r->longitude_mul_1e6),
-		1e-6 * clib_net_to_host_i32 (r->latitude_mul_1e6));
+    {
+      asn_position_on_earth_t pos;
+      pos = asn_user_mark_response_position (r);
+      s = format (s, "location lat %.9f lon %.9f", pos.latitude, pos.longitude);
+    }
   return s;
 }
 
@@ -645,11 +647,12 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
   switch (acked_pdu_id)
     {
     case ASN_PDU_login:
-    case ASN_PDU_resume:
+    case ASN_PDU_resume: {
+      asn_user_t * au = 0;
+
       if (acked_pdu_id == ASN_PDU_login)
 	{
 	  asn_user_ref_t r;
-	  asn_user_t * au;
 	  asn_client_socket_t * cs;
 	  asn_client_socket_login_user_t * lu;
 
@@ -674,7 +677,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 
 	  ASSERT (lu->login_in_progress);
 	  lu->login_in_progress = 0;
-	}
+        }
 
       /* Login/resume response contains new emphemeral public key and nonce. */
       {
@@ -684,7 +687,19 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	} * rekey = (void *) ack->data;
 	asn_socket_crypto_set_peer (as, rekey->public_encrypt_key, rekey->nonce);
       }
+
+      /* Mark last position if valid. */
+      if (au != 0 && ! is_error)
+        {
+          uword is_place = 0;
+          if (au->current_marks_are_valid & (1 << is_place))
+            {
+              asn_position_on_earth_t pos = asn_user_mark_response_position (&au->current_marks[is_place]);
+              asn_mark_position (as, pos);
+            }
+        }
       break;
+    }
 
     case ASN_PDU_exec: {
       u32 ai = ack->header.exec_request_id.ack_handler_index;
@@ -1265,6 +1280,12 @@ clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, as
   l->header.login_request_id.user_type_index = au->user_type_index;
   l->header.login_request_id.user_index = au->index;
 
+  if (am->verbose)
+    clib_warning ("type %U, key %U, sig %U",
+		  format_asn_user_type, au->user_type_index,
+		  format_hex_bytes, l->key, sizeof (l->key),
+		  format_hex_bytes, l->signature, sizeof (l->signature));
+
   {
     asn_client_socket_t * cs;
     asn_client_socket_login_user_t * lu;
@@ -1384,6 +1405,7 @@ static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t 
   asn_main_t * am = ah->asn_main;
   learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
   asn_user_t * au;
+  asn_user_type_t * ut;
   u32 user_type_index;
 
   if (n_bytes_ack_data != sizeof (ack_data[0]))
@@ -1439,6 +1461,10 @@ static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t 
     au = asn_update_peer_user (am, ASN_TX, user_type_index, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
     au->current_marks_are_valid |= 1 << is_place;
     au->current_marks[is_place] = mr[0];
+
+    ut = pool_elt (asn_user_type_pool, user_type_index);
+    if (ut->did_learn_new_user)
+      ut->did_learn_new_user (au, is_place);
   }
 
  done:
@@ -1450,6 +1476,7 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   clib_error_t * error = 0;
   asn_user_mark_response_t * r = asn_pdu_contents_for_blob (blob);
   asn_user_t * au;
+  asn_user_type_t * ut;
 
   if (am->verbose)
     clib_warning ("%U", format_asn_user_mark_response, r);
@@ -1461,6 +1488,12 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
       uword is_place = asn_user_mark_response_is_place (r);
       au->current_marks_are_valid |= 1 << is_place;
       au->current_marks[is_place] = r[0];
+
+      ut = pool_elt (asn_user_type_pool, au->user_type_index);
+
+      if (ut->user_mark_did_change)
+        ut->user_mark_did_change (au, is_place);
+
       return error;
     }
 
@@ -1480,8 +1513,38 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
 				    format_hex_bytes, r->user, sizeof (r->user));
 }
 
-clib_error_t * asn_mark_position (asn_socket_t * as, f64 longitude, f64 latitude)
-{ return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, longitude, 0, latitude); }
+clib_error_t * asn_mark_position (asn_socket_t * as, asn_position_on_earth_t pos)
+{ return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, pos.longitude, 0, pos.latitude); }
+
+void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos)
+{
+  asn_client_socket_t * cs;
+  asn_socket_t * as;
+  clib_error_t * error = 0;
+
+  /* Set location mark for current user. */
+  {
+    asn_user_t * self_user = asn_user_by_ref (&am->self_user_ref);
+    uword is_place = 0;
+    self_user->current_marks_are_valid |= 1 << is_place;
+    self_user->current_marks[is_place] = asn_user_mark_response_for_position (pos);
+  }
+
+  /* Mark self user's position to all established sessions. */
+  vec_foreach (cs, am->client_sockets)
+    {
+      if (cs->socket_index == ~0)
+        continue;
+
+      as = asn_socket_at_index (am, cs->socket_index);
+      if (as->session_state != ASN_SESSION_STATE_established)
+        continue;
+
+      error = asn_mark_position (as, pos);
+      if (error)
+        clib_error_report (error);
+    }
+}
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket)
 {
@@ -1569,6 +1632,7 @@ void serialize_asn_user (serialize_main_t * m, va_list * va)
     asn_crypto_public_keys_t * pk = &u->crypto_keys.public;
     serialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
     serialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+    serialize_data (m, pk->self_signed_encrypt_key, sizeof (pk->self_signed_encrypt_key));
   }
 
   {
@@ -1594,6 +1658,7 @@ void unserialize_asn_user (serialize_main_t * m, va_list * va)
     asn_crypto_public_keys_t * pk = &u->crypto_keys.public;
     unserialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
     unserialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+    unserialize_data (m, pk->self_signed_encrypt_key, sizeof (pk->self_signed_encrypt_key));
   }
 
   {
