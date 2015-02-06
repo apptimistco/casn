@@ -1230,12 +1230,14 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   memcpy (ck.public.encrypt_key, keys->public_encrypt_key, sizeof (ck.public.encrypt_key));
   memcpy (ck.public.auth_key, keys->public_auth_key, sizeof (ck.public.auth_key));
 
-  au = asn_user_by_ref (&am->self_user_ref);
-  if (au)
-    asn_user_update_keys (am, ASN_TX, au,
-                          /* with_public_keys */ &ck.public,
-                          /* with_private_keys */ &ck.private,
-                          /* with_random_private_keys */ 0);
+  if (nah->is_self_user && am->self_user_ref.user_index != ~0)
+    {
+      au = asn_user_by_ref (&am->self_user_ref);
+      asn_user_update_keys (am, ASN_TX, au,
+			    /* with_public_keys */ &ck.public,
+			    /* with_private_keys */ &ck.private,
+			    /* with_random_private_keys */ 0);
+    }
   else
     au = asn_new_user_with_type (am, ASN_TX, nah->user_type_index,
                                  /* with_public_keys */ &ck.public,
@@ -1243,7 +1245,8 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
                                  /* with_random_private_keys */ 0);
 
   if (am->verbose)
-    clib_warning ("newuser type %U, user-keys %U %U",
+    clib_warning ("newuser %stype %U, user-keys %U %U",
+		  nah->is_self_user ? "self-user " : "",
 		  format_asn_user_type, nah->user_type_index,
 		  format_hex_bytes, au->crypto_keys.private.encrypt_key, sizeof (au->crypto_keys.private.encrypt_key),
 		  format_hex_bytes, au->crypto_keys.private.auth_key, 32);
