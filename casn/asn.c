@@ -688,14 +688,22 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	asn_socket_crypto_set_peer (as, rekey->public_encrypt_key, rekey->nonce);
       }
 
-      /* Mark last position if valid. */
       if (au != 0 && ! is_error)
         {
           uword is_place = 0;
+          /* Mark current position if valid. */
           if (au->current_marks_are_valid & (1 << is_place))
             {
               asn_position_on_earth_t pos = asn_user_mark_response_position (&au->current_marks[is_place]);
               asn_mark_position (as, pos);
+            }
+
+          /* Query marks for other users. */
+          if (asn_is_user_for_ref (au, &am->self_user_ref))
+            {
+              error = asn_exec (as, 0, "fetch%c~./asn/mark", 0);
+              if (error)
+                goto done;
             }
         }
       break;
