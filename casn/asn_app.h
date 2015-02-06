@@ -171,6 +171,13 @@ typedef struct {
   asn_app_message_union_t * messages_by_increasing_time;
 } asn_app_gen_user_t;
 
+always_inline void asn_app_gen_user_set_position (asn_app_gen_user_t * u, asn_position_on_earth_t pos)
+{
+  uword is_place = 0;
+  u->asn_user.current_marks[is_place] = asn_user_mark_response_for_position (pos);
+  u->asn_user.current_marks_are_valid = 1 << is_place;
+}
+
 always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
 {
   asn_user_free (&u->asn_user);
@@ -192,7 +199,6 @@ typedef struct {
   uword * user_friends;
   u32 recent_check_in_location_index;
   asn_app_location_t recent_check_in_locations[32];
-  asn_position_on_earth_t position_on_earth;
   uword * events_rsvpd_for_user;
 } asn_app_user_t;
 
@@ -243,8 +249,6 @@ typedef struct {
 
   /* Location of event. */
   asn_app_location_t location;
-
-  asn_position_on_earth_t position_on_earth;
 
   /* Hash of user indices that have RSVPd for this event. */
   uword * users_rsvpd_for_event;

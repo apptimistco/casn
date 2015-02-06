@@ -560,7 +560,8 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
   asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
 
   /* 0 is always reserved for unset oneof attributes. */
-  if (i >= vec_len (a->values.as_u8))
+  if (i >= vec_len (a->values.as_u8)
+      || vec_len (a->oneof_values) == 0)
     {
       if (vec_len (a->oneof_values) > 0)
         ASSERT (a->oneof_values[0] == 0);
