@@ -223,6 +223,7 @@ typedef struct {
   void (* did_set_user_keys) (struct asn_user_t * au);
 
   void (* did_learn_new_user) (struct asn_user_t * au, uword place_mark_did_change);
+
   void (* user_mark_did_change) (struct asn_user_t * au, uword place_mark_did_change);
 } asn_user_type_t;
 
@@ -671,8 +672,8 @@ asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u
 
 void asn_user_type_free (asn_user_type_t * t);
 
-clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
-clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
+clib_error_t * asn_socket_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
+clib_error_t * asn_socket_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);

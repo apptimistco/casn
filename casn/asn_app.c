@@ -928,6 +928,44 @@ clib_error_t * asn_app_main_read_from_file (asn_app_main_t * am, char * unix_fil
   return error;
 }
 
+static void
+serialize_asn_app_profile_for_gen_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_type_t * ut = va_arg (*va, asn_app_user_type_t *);
+  asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
+  serialize (m, serialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
+  vec_serialize (m, u->photos, serialize_asn_app_photo);
+}
+
+static void
+unserialize_asn_app_profile_for_gen_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_type_t * ut = va_arg (*va, asn_app_user_type_t *);
+  asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
+  unserialize (m, unserialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
+  vec_unserialize (m, &u->photos, unserialize_asn_app_photo);
+}
+
+void
+serialize_asn_app_profile_for_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_user];
+  serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
+  serialize (m, serialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+}
+
+void
+unserialize_asn_app_profile_for_user (serialize_main_t * m, va_list * va)
+{
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  asn_app_user_t * u = va_arg (*va, asn_app_user_t *);
+  asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_user];
+  unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_user_for_profile");
+  unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+}
+
 static void asn_app_free_user (asn_user_t * au)
 {
   asn_app_user_t * u = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
@@ -946,8 +984,50 @@ static void asn_app_free_event (asn_user_t * au)
   asn_app_event_free (u);
 }
 
+static clib_error_t *
+asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
+                          asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  ASSERT (0);
+  return 0;
+}
+
+static clib_error_t *
+asn_user_profile_blob_handler (asn_main_t * am, asn_socket_t * as,
+                               asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  clib_error_t * error = 0;
+  asn_user_t * au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+  asn_app_user_t * app_user = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  asn_app_user_type_t * ut = &app_main->user_types[ASN_APP_USER_TYPE_user];
+  serialize_main_t m;
+
+  if (! au)
+    {
+      error = clib_error_return (0, "owner user not found %U", format_hex_bytes, blob->owner, sizeof (blob->owner));
+      goto done;
+    }
+
+  if (asn_is_user_for_ref (au, &am->self_user_ref))
+    goto done;
+
+  serialize_open_data (&m, asn_pdu_contents_for_blob (blob), asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
+  error = unserialize (&m, unserialize_asn_app_profile_for_user, app_main, app_user);
+  serialize_close (&m);
+
+  if (! error && ut->did_update_user_profile)
+    ut->did_update_user_profile (au);
+
+ done:
+  return error;
+}
+
 void asn_app_main_init (asn_app_main_t * am)
 {
+  asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
+  asn_set_blob_handler_for_name (&am->asn_main, asn_user_profile_blob_handler, "user_profile");
+
   if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)
     {
       asn_user_type_t t = {

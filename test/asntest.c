@@ -225,7 +225,7 @@ int test_asn_main (unformat_input_t * input)
 	      && now - tas->last_echo_time > tm->time_interval_between_echos)
 	    {
 	      if (0) {
-		error = asn_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
+		error = asn_socket_exec (as, asn_socket_exec_echo_data_ack_handler, "echo%cfoo", 0);
 		if (error)
 		  clib_error_report (error);
 	      }
@@ -249,11 +249,11 @@ int test_asn_main (unformat_input_t * input)
 		    if (! pool_is_free_index (user_pool, ui) && ui != am->self_user_ref.user_index)
 		      {
 			static int oingoes;
-			error = asn_exec (as, 0, "blob%c~%U%c-%c%chello %d",
-					  0,
-					  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
-					  0, 0, 0,
-					  oingoes++);
+			error = asn_socket_exec (as, 0, "blob%c~%U%c-%c%chello %d",
+                                                 0,
+                                                 format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
+                                                 0, 0, 0,
+                                                 oingoes++);
 			if (error)
 			  clib_error_report (error);
 		      }

@@ -530,7 +530,7 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
   return error;
 }
 
-static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, va_list * va)
+static clib_error_t * asn_socket_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, va_list * va)
 {
   u8 * s = va_format (0, fmt, va);
   asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
@@ -547,23 +547,23 @@ static clib_error_t * asn_exec_helper (asn_socket_t * as, asn_exec_ack_handler_t
   return asn_socket_tx (as);
 }
 
-clib_error_t * asn_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * f, char * fmt, ...)
+clib_error_t * asn_socket_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * f, char * fmt, ...)
 {
   asn_exec_ack_handler_t * ah = f ? asn_exec_ack_handler_create_with_function (f) : 0;
   clib_error_t * error = 0;
   va_list va;
   va_start (va, fmt);
-  error = asn_exec_helper (as, ah, fmt, &va);
+  error = asn_socket_exec_helper (as, ah, fmt, &va);
   va_end (va);
   return error;
 }
 
-clib_error_t * asn_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ah, char * fmt, ...)
+clib_error_t * asn_socket_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ah, char * fmt, ...)
 {
   clib_error_t * error = 0;
   va_list va;
   va_start (va, fmt);
-  error = asn_exec_helper (as, ah, fmt, &va);
+  error = asn_socket_exec_helper (as, ah, fmt, &va);
   va_end (va);
   return error;
 }
@@ -701,7 +701,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
           /* Query marks for other users. */
           if (asn_is_user_for_ref (au, &am->self_user_ref))
             {
-              error = asn_exec (as, 0, "fetch%c~./asn/mark", 0);
+              error = asn_socket_exec (as, 0, "fetch%c~./asn/mark", 0);
               if (error)
                 goto done;
             }
@@ -723,7 +723,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
       pool_put_index (as->exec_ack_handler_pool, ai);
       if (ah)
 	{
-	  if (ah->function)
+	  if (! is_error && ah->function)
 	    {
 	      ah->asn_main = am;
 	      ah->asn_socket = as;
@@ -731,6 +731,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	    }
 	  clib_mem_free_in_container (ah, ah->container_offset_of_object);
 	}
+
       return error;
     }
 
@@ -768,7 +769,9 @@ static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
               format_asn_pdu_id, ack->header.generic_request_id.id,
               format_asn_ack_pdu_status, ack->status);
 
-  if (n_bytes > sizeof (ack[0]))
+  if (ack->status != ASN_ACK_PDU_STATUS_success)
+    s = format (s, " %*s", n_bytes - sizeof (ack[0]), ack->data);
+  else if (n_bytes > sizeof (ack[0]))
     s = format (s, ", data %U", format_hex_bytes, ack->data, n_bytes - sizeof (ack[0]));
 
   return s;
@@ -1279,7 +1282,7 @@ clib_error_t * asn_request_new_user_with_type (asn_main_t * am, asn_socket_t * a
      STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
   nah->user_type_index = am->self_user_ref.type_index;
   nah->is_self_user = is_self_user;
-  return asn_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
+  return asn_socket_exec_with_ack_handler (as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
 }
 
 clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au)
@@ -1517,15 +1520,17 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   lah->mark_response = r[0];
 
   /* Ask for concatenation of user's asn/auth + asn/user. */
-  return asn_exec_with_ack_handler (as, &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
-				    0,
-				    format_hex_bytes, r->user, sizeof (r->user),
-				    0,
-				    format_hex_bytes, r->user, sizeof (r->user));
+  return asn_socket_exec_with_ack_handler
+    (as,
+     &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
+     0,
+     format_hex_bytes, r->user, sizeof (r->user),
+     0,
+     format_hex_bytes, r->user, sizeof (r->user));
 }
 
 clib_error_t * asn_mark_position (asn_socket_t * as, asn_position_on_earth_t pos)
-{ return asn_exec (as, 0, "mark%c%.9f%c%.9f", 0, pos.longitude, 0, pos.latitude); }
+{ return asn_socket_exec (as, 0, "mark%c%.9f%c%.9f", 0, pos.longitude, 0, pos.latitude); }
 
 void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos)
 {

@@ -271,6 +271,8 @@ typedef struct {
   asn_user_type_t user_type;
 
   asn_app_attribute_main_t attribute_main;
+
+  void (* did_update_user_profile) (asn_user_t * au);
 } asn_app_user_type_t;
 
 #define foreach_asn_app_user_type		\
@@ -340,5 +342,6 @@ uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_ma
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 
 serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
+serialize_function_t serialize_asn_app_profile_for_user, unserialize_asn_app_profile_for_user;
 
 #endif /* included_asn_app_h */
