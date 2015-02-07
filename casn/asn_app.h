@@ -144,6 +144,8 @@ typedef struct {
   asn_app_attribute_type_t oneof_value_type_for_unserialize;
   u32 * oneof_map_for_unserialize;
 
+  uword * value_is_valid_bitmap;
+
   union {
     u8 * as_u8;
     u16 * as_u16;
@@ -334,6 +336,13 @@ u32 asn_app_add_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, char * f
 
 void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
 void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, ...);
+
+void asn_app_invalidate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i);
+always_inline void asn_app_validate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
+{
+  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
+  a->value_is_valid_bitmap = clib_bitmap_ori (a->value_is_valid_bitmap, ui);
+}
 
 void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, char * fmt, ...);
 u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);

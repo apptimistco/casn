@@ -77,8 +77,8 @@ typedef CLIB_PACKED (struct {
   /* 16 byte poly1305 authenticator for user data. */
   u8 user_data_authentication[crypto_box_authentication_bytes];
 
-  /* Up to 4096 - 2 - 16 bytes of user data follow. */
-  u8 user_data[4096 - sizeof (u16) - crypto_box_authentication_bytes];
+  /* Up to 4096 - 16 bytes of user data follow. */
+  u8 user_data[4096 - crypto_box_authentication_bytes];
 }) asn_pdu_frame_t;
 
 typedef CLIB_PACKED (struct {
@@ -472,6 +472,9 @@ typedef struct asn_socket_t {
   /* Currently received PDU we're working on. */
   u8 * rx_pdu;
 
+  /* Current frame we're working on. */
+  u8 * rx_frame;
+
   asn_crypto_ephemeral_keys_t ephemeral_keys;
 
   /* Nonce and shared secret. */
@@ -491,6 +494,7 @@ asn_socket_free (asn_socket_t * as)
 {
   asn_pdu_t * p;
   vec_free (as->rx_pdu);
+  vec_free (as->rx_frame);
   vec_foreach (p, as->tx_pdus)
     asn_pdu_free (p);
   vec_free (as->tx_pdus);
@@ -525,6 +529,7 @@ typedef struct {
 
   struct {
     f64 open, first_close, next_connect_attempt, backoff;
+    f64 last_profile_fetch;
   } timestamps;
 
   u8 * socket_config;

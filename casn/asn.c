@@ -535,6 +535,7 @@ static clib_error_t * asn_socket_exec_helper (asn_socket_t * as, asn_exec_ack_ha
   u8 * s = va_format (0, fmt, va);
   asn_pdu_header_t * h = asn_socket_tx_add_pdu (as, ASN_PDU_exec, sizeof (h[0]) + vec_len (s));
   memcpy (h->data, s, vec_len (s));
+
   vec_free (s);
 
   {
@@ -818,17 +819,28 @@ static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
   asn_pdu_blob_t * blob = va_arg (*va, asn_pdu_blob_t *);
   u32 n_bytes = va_arg (*va, u32);
   u32 n_bytes_in_blob_contents = n_bytes - sizeof (blob[0]) - blob->n_name_bytes;
+  uword indent = format_get_indent (s);
 
-  s = format (s, "blob owner %U, author %U, time %U",
+  s = format (s, "owner %U\n%Uauthor %U\n%Utime %U",
 	      format_hex_bytes, blob->owner, sizeof (blob->owner),
+              format_white_space, indent,
 	      format_hex_bytes, blob->author, sizeof (blob->author),
+              format_white_space, indent,
 	      format_asn_time_stamp, blob->time_stamp_in_nsec_from_1970);
 
   if (blob->n_name_bytes > 0)
-    s = format (s, ", name `%*s'", blob->n_name_bytes, blob->name);
+    s = format (s, "\n%Uname `%*s'",
+                format_white_space, indent,
+                blob->n_name_bytes, blob->name);
 
   if (n_bytes_in_blob_contents > 0)
-    s = format (s, ", contents %U", format_hex_bytes, blob->name + blob->n_name_bytes, n_bytes_in_blob_contents);
+    {
+      s = format (s, "\n%Ucontents %U",
+                  format_white_space, indent,
+                  format_hex_bytes, blob->name + blob->n_name_bytes, clib_min (128, n_bytes_in_blob_contents));
+      if (n_bytes_in_blob_contents > 128)
+        s = format (s, "...");
+    }
 
   return s;
 }
@@ -929,23 +941,23 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
       return 0;
     }
 
-  vec_add (as->rx_pdu, rx_payload, n_payload_bytes);
-  f = (void *) as->rx_pdu;
+  vec_add (as->rx_frame, rx_payload, n_payload_bytes);
+  f = (void *) as->rx_frame;
 
   l = clib_net_to_host_u16 (f->n_bytes_that_follow_and_more_flag_network_byte_order);
   is_last_frame = (l & ASN_PDU_FRAME_MORE_FLAG) == 0;
   l &= ~ ASN_PDU_FRAME_MORE_FLAG;
 
-  if (vec_len (as->rx_pdu) < l + sizeof (f->n_bytes_that_follow_and_more_flag_network_byte_order))
+  if (vec_len (as->rx_frame) < l + sizeof (f->n_bytes_that_follow_and_more_flag_network_byte_order))
     return 0;
 
-  if (vec_len (as->rx_pdu) > l + sizeof (f->n_bytes_that_follow_and_more_flag_network_byte_order))
+  if (vec_len (as->rx_frame) > l + sizeof (f->n_bytes_that_follow_and_more_flag_network_byte_order))
     {
       error = clib_error_return (0, "frame length error frame %d websocket %d", l, n_payload_bytes);
       goto done;
     }
 
-  n_user_data_bytes = vec_len (as->rx_pdu) - STRUCT_OFFSET_OF (asn_pdu_frame_t, user_data);
+  n_user_data_bytes = vec_len (as->rx_frame) - STRUCT_OFFSET_OF (asn_pdu_frame_t, user_data);
   if (n_user_data_bytes > sizeof (f->user_data))
     {
       error = clib_error_return (0, "frame length too long %d", n_user_data_bytes);
@@ -958,8 +970,6 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
 	  sizeof (f->user_data_authentication));
   memcpy (crypto_box_buffer + crypto_box_reserved_pad_bytes, f->user_data, n_user_data_bytes);
 
-  vec_reset_length (as->rx_pdu);
-
   if (crypto_box_open_afternm (crypto_box_buffer, crypto_box_buffer, crypto_box_reserved_pad_bytes + n_user_data_bytes,
 			       as->ephemeral_crypto_state.nonce[ASN_RX],
 			       as->ephemeral_crypto_state.shared_secret) < 0)
@@ -970,6 +980,7 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
   asn_crypto_increment_nonce (&as->ephemeral_crypto_state, ASN_RX, 2);
 
   vec_add (as->rx_pdu, crypto_box_buffer + crypto_box_reserved_pad_bytes, n_user_data_bytes);
+  vec_reset_length (as->rx_frame);
 
   if (! is_last_frame)
     goto done;
@@ -1005,8 +1016,14 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
       goto done;
     }
 
- done:
   vec_reset_length (as->rx_pdu);
+
+ done:
+  if (error)
+    {
+      vec_reset_length (as->rx_pdu);
+      vec_reset_length (as->rx_frame);
+    }
   return error;
 }
 
