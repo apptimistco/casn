@@ -1708,14 +1708,14 @@ void serialize_asn_user_type (serialize_main_t * m, va_list * va)
 {
   CLIB_UNUSED (asn_main_t * am) = va_arg (*va, asn_main_t *);
   asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
-  serialize (m, serialize_pool, t->user_pool, t->user_type_n_bytes, t->serialize_users);
+  serialize (m, serialize_pool, t->user_pool, t->user_type_n_bytes, t->serialize_pool_users);
 }
 
 void unserialize_asn_user_type (serialize_main_t * m, va_list * va)
 {
   asn_main_t * am = va_arg (*va, asn_main_t *);
   asn_user_type_t * t = va_arg (*va, asn_user_type_t *);
-  unserialize (m, unserialize_pool, &t->user_pool, t->user_type_n_bytes, t->unserialize_users);
+  unserialize (m, unserialize_pool, &t->user_pool, t->user_type_n_bytes, t->unserialize_pool_users);
 
   {
     void * u;

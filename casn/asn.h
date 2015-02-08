@@ -217,7 +217,7 @@ typedef struct {
   void (* free_user) (struct asn_user_t * au);
 
   /* Pool serialize/unserialize functions. */
-  serialize_function_t * serialize_users, * unserialize_users;
+  serialize_function_t * serialize_pool_users, * unserialize_pool_users;
 
   /* Called when exec newuser successfully completes. */
   void (* did_set_user_keys) (struct asn_user_t * au);
