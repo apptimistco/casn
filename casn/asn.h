@@ -677,13 +677,13 @@ asn_update_peer_user (asn_main_t * am, asn_rx_or_tx_t rt, u32 user_type_index, u
 
 void asn_user_type_free (asn_user_type_t * t);
 
-clib_error_t * asn_socket_exec_with_ack_handler (asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
-clib_error_t * asn_socket_exec (asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
+clib_error_t * asn_socket_exec_with_ack_handler (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
+clib_error_t * asn_socket_exec (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 
-clib_error_t * asn_mark_position (asn_socket_t * as, asn_position_on_earth_t pos);
+clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos);
 void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos);
 
 format_function_t format_asn_user_type, format_asn_user_mark_response;
