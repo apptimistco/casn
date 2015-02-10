@@ -277,6 +277,8 @@ typedef struct {
   serialize_function_t * serialize_blob_contents, * unserialize_blob_contents;
 
   void (* did_update_user) (asn_user_t * au);
+
+  void (* did_add_message) (asn_user_t * to_user);
 } asn_app_user_type_t;
 
 #define foreach_asn_app_user_type		\
@@ -350,6 +352,10 @@ void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui,
 u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
+clib_error_t *
+asn_app_send_text_message_to_user (asn_app_main_t * am,
+                                   asn_app_user_type_enum_t to_user_type, u32 to_user_index,
+                                   char * fmt, ...);
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 
 void asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
