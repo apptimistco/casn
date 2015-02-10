@@ -498,6 +498,19 @@ asn_socket_free (asn_socket_t * as)
   vec_foreach (p, as->tx_pdus)
     asn_pdu_free (p);
   vec_free (as->tx_pdus);
+
+  {
+    uword i;
+    vec_foreach_index (i, as->exec_ack_handler_pool)
+      {
+        if (! pool_is_free_index (as->exec_ack_handler_pool, i))
+          {
+            asn_exec_ack_handler_t * ah = as->exec_ack_handler_pool[i];
+            clib_mem_free_in_container (ah, ah->container_offset_of_object);
+          }
+      }
+    pool_free (as->exec_ack_handler_pool);
+  }
 }
 
 typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);

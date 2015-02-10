@@ -1639,6 +1639,21 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
 
 void asn_main_free (asn_main_t * am)
 {
+  /* Close and free all open sockets and free websocket main. */
+  {
+    uword i;
+    websocket_main_t * wsm = &am->websocket_main;
+    asn_socket_t * socket_pool = am->websocket_main.user_socket_pool;
+    vec_foreach_index (i, socket_pool)
+      {
+        if (! pool_is_free_index (socket_pool, i))
+          websocket_close (wsm, websocket_at_index (wsm, i));
+      }
+
+    websocket_main_free (wsm);
+  }
+
+
   {
     int i;
     for (i = 0; i < ARRAY_LEN (am->user_ref_by_public_encrypt_key); i++)
@@ -1669,6 +1684,7 @@ void asn_main_free (asn_main_t * am)
       asn_client_socket_free (cs);
     vec_free (am->client_sockets);
   }
+  unix_file_poller_free (&am->unix_file_poller);
 }
 
 void asn_user_type_free (asn_user_type_t * t)
