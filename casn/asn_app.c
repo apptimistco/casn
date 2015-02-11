@@ -900,7 +900,7 @@ void asn_app_main_free (asn_app_main_t * am)
 
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1)
 {
-  f64 cmp = m0->header.time_stamp - m1->header.time_stamp;
+  i64 cmp = m0->header.time_stamp_in_nsec_from_1970 - m1->header.time_stamp_in_nsec_from_1970;
   return cmp > 0 ? +1 : (cmp < 0 ? -1 : 0);
 }
 
@@ -951,7 +951,7 @@ static void serialize_asn_app_message (serialize_main_t * m, va_list * va)
   if (is_save_restore)
     {
       serialize_likely_small_unsigned_integer (m, h->from_user_index);
-      serialize (m, serialize_f64, h->time_stamp);
+      serialize_integer (m, h->time_stamp_in_nsec_from_1970, sizeof (h->time_stamp_in_nsec_from_1970));
     }
 
   switch (h->type)
@@ -986,7 +986,7 @@ static void unserialize_asn_app_message (serialize_main_t * m, va_list * va)
   if (is_save_restore)
     {
       h->from_user_index = unserialize_likely_small_unsigned_integer (m);
-      unserialize (m, unserialize_f64, &h->time_stamp);
+      unserialize_integer (m, &h->time_stamp_in_nsec_from_1970, sizeof (h->time_stamp_in_nsec_from_1970));
     }
 
   switch (h->type)
@@ -1041,7 +1041,7 @@ serialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
 
   serialize (m, serialize_asn_user, &u->asn_user);
   vec_serialize (m, u->photos, serialize_vec_asn_app_photo);
-  vec_serialize (m, u->messages_by_increasing_time, serialize_vec_asn_app_message);
+  vec_serialize (m, u->messages, serialize_vec_asn_app_message);
   serialize (m, serialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
 }
 
@@ -1053,7 +1053,7 @@ unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
   asn_app_user_type_t * ut;
   unserialize (m, unserialize_asn_user, &u->asn_user);
   vec_unserialize (m, &u->photos, unserialize_vec_asn_app_photo);
-  vec_unserialize (m, &u->messages_by_increasing_time, unserialize_vec_asn_app_message);
+  vec_unserialize (m, &u->messages, unserialize_vec_asn_app_message);
 
   asn_ut = pool_elt (asn_user_type_pool, u->asn_user.user_type_index);
   ut = CONTAINER_OF (asn_ut, asn_app_user_type_t, user_type);
@@ -1525,52 +1525,51 @@ asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_e
 
 static void asn_app_gen_user_add_message (asn_app_gen_user_t * gu, asn_app_message_union_t * msg)
 {
-  word i, l;
+  uword i;
+  u64 ts = msg->header.time_stamp_in_nsec_from_1970;
 
-  l = vec_len (gu->messages_by_increasing_time);
-  if (l > 0)
-    {
-      for (i = l - 1; i >= 0; i--)
-        if (msg->header.time_stamp > gu->messages_by_increasing_time[i].header.time_stamp)
-          break;
-      if (i == l - 1)
-        vec_add1 (gu->messages_by_increasing_time, msg[0]);
-      else
-        {
-          vec_insert (gu->messages_by_increasing_time, 1, i);
-          gu->messages_by_increasing_time[i] = msg[0];
-        }
-    }
-  else
-    vec_add1 (gu->messages_by_increasing_time, msg[0]);
+  /* FIXME hash table. */
+  vec_foreach_index (i, gu->messages)
+    if (gu->messages[i].header.time_stamp_in_nsec_from_1970 == ts)
+      return;
+
+  vec_add1 (gu->messages, msg[0]);
 }
 
 static clib_error_t * rx_message (asn_main_t * am,
-                                  asn_user_t * au,
+                                  asn_user_t * src_au,
+                                  asn_user_t * dst_au,
                                   asn_app_message_union_t * msg)
 {
   clib_error_t * error = 0;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
-  asn_user_type_t * ut = pool_elt (asn_user_type_pool, au->user_type_index);
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, dst_au->user_type_index);
   asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
   asn_app_user_type_enum_t te = app_ut - app_main->user_types;
+  asn_user_t * did_add_au = dst_au;
     
+  msg->header.from_user_index = src_au->index;
+
   switch (te)
     {
     case ASN_APP_USER_TYPE_user: {
-      asn_app_user_t * u = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
+      asn_app_user_t * u;
+      u32 src_is_self_user = asn_is_user_for_ref (src_au, &am->self_user_ref);
+      msg->header.from_user_index = src_is_self_user ? am->self_user_ref.user_index : src_au->index;
+      did_add_au = src_is_self_user ? dst_au : src_au;
+      u = CONTAINER_OF (did_add_au, asn_app_user_t, gen_user.asn_user);
       asn_app_gen_user_add_message (&u->gen_user, msg);
       break;
     }
 
     case ASN_APP_USER_TYPE_user_group: {
-      asn_app_user_group_t * g = CONTAINER_OF (au, asn_app_user_group_t, gen_user.asn_user);
+      asn_app_user_group_t * g = CONTAINER_OF (did_add_au, asn_app_user_group_t, gen_user.asn_user);
       asn_app_gen_user_add_message (&g->gen_user, msg);
       break;
     }
 
     case ASN_APP_USER_TYPE_event: {
-      asn_app_event_t * e = CONTAINER_OF (au, asn_app_event_t, gen_user.asn_user);
+      asn_app_event_t * e = CONTAINER_OF (did_add_au, asn_app_event_t, gen_user.asn_user);
       asn_app_gen_user_add_message (&e->gen_user, msg);
       break;
     }
@@ -1582,7 +1581,7 @@ static clib_error_t * rx_message (asn_main_t * am,
     }
 
   if (app_ut->did_add_message)
-    app_ut->did_add_message (au);
+    app_ut->did_add_message (did_add_au);
 
  done:
   return error;
@@ -1612,10 +1611,10 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
   if (error)
     goto done;
 
-  msg.header.from_user_index = src_au->index;
-  msg.header.time_stamp = 1e-9 * clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
+  msg.header.from_user_index = ~0;
+  msg.header.time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
 
-  rx_message (am, src_au, &msg);
+  rx_message (am, src_au, dst_au, &msg);
 
  done:
   if (error)
@@ -1663,7 +1662,7 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
   va_start (va, fmt);
   msg.header.type = ASN_APP_MESSAGE_TYPE_text;
   msg.header.from_user_index = am->self_user_ref.user_index;
-  msg.header.time_stamp = unix_time_now ();
+  msg.header.time_stamp_in_nsec_from_1970 = 0;
   msg.text.text = va_format (0, fmt, &va);
   va_end (va);
 
@@ -1675,10 +1674,6 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
       goto done;
     content = serialize_close_vector (&sm);
   }
-
-  error = rx_message (am, to_asn_user, &msg);
-  if (error)
-    goto done;
 
   error = asn_socket_exec (am, 0, 0, "blob%c~%U%c-%c%c%v", 0,
                            format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
@@ -1694,6 +1689,8 @@ void asn_app_main_init (asn_app_main_t * am)
 {
   asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "%s", asn_app_user_blob_name);
+
+  /* FIXME remove this when server never prepends with /. */
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "/%s", asn_app_user_blob_name);
 
   if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)

@@ -50,7 +50,7 @@ typedef enum {
 typedef struct {
   u32 from_user_index;
   asn_app_message_type_t type;
-  f64 time_stamp;
+  u64 time_stamp_in_nsec_from_1970;
 } asn_app_message_header_t;
 
 typedef struct {
@@ -171,7 +171,7 @@ typedef struct {
   /* Photos of user, event, user group. */
   asn_app_photo_t * photos;
 
-  asn_app_message_union_t * messages_by_increasing_time;
+  asn_app_message_union_t * messages;
 } asn_app_gen_user_t;
 
 always_inline void asn_app_gen_user_set_position (asn_app_gen_user_t * u, asn_position_on_earth_t pos)
@@ -192,7 +192,7 @@ always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
     vec_free (u->photos);
   }
 
-  asn_app_message_union_vector_free (&u->messages_by_increasing_time);
+  asn_app_message_union_vector_free (&u->messages);
 }
 
 typedef struct {
