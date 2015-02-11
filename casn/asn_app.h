@@ -22,6 +22,7 @@ typedef struct {
   u8 * unique_id;		/* => name of location blob */
   u8 ** address_lines;
   u8 * thumbnail_as_image_data;
+  asn_position_on_earth_t position_on_earth;
 } asn_app_location_t;
 
 always_inline void asn_app_location_free (asn_app_location_t * l)
@@ -246,9 +247,6 @@ typedef struct {
   /* Private versus public event. */
   u32 is_private : 1;
 
-  /* Event is created by current user. */
-  u32 is_created_by_self_user : 1;
-
   /* Location of event. */
   asn_app_location_t location;
 
@@ -278,7 +276,7 @@ typedef struct {
 
   void (* free_user) (asn_user_t * au);
 
-  void (* did_update_user) (asn_user_t * au);
+  void (* did_update_user) (asn_user_t * au, u32 is_new_user);
 
   void (* did_add_message) (asn_user_t * to_user);
 } asn_app_user_type_t;

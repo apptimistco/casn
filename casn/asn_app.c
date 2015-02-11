@@ -1109,26 +1109,58 @@ unserialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
 }
 
 static void
+serialize_asn_app_location (serialize_main_t * m, va_list * va)
+{
+  asn_app_location_t * l = va_arg (*va, asn_app_location_t *);
+  uword i;
+
+  vec_serialize (m, l->unique_id, serialize_vec_8);
+  serialize_likely_small_unsigned_integer (m, vec_len (l->address_lines));
+  vec_foreach_index (i, l->address_lines)
+    vec_serialize (m, l->address_lines[i], serialize_vec_8);
+  vec_serialize (m, l->thumbnail_as_image_data, serialize_vec_8);
+  serialize (m, serialize_asn_position_on_earth, &l->position_on_earth);
+}
+
+static void
+unserialize_asn_app_location (serialize_main_t * m, va_list * va)
+{
+  asn_app_location_t * l = va_arg (*va, asn_app_location_t *);
+  uword i;
+
+  vec_unserialize (m, &l->unique_id, unserialize_vec_8);
+  vec_reset_length (l->address_lines);
+  i = unserialize_likely_small_unsigned_integer (m);
+  vec_resize (l->address_lines, i);
+  vec_foreach_index (i, l->address_lines)
+    vec_unserialize (m, &l->address_lines[i], unserialize_vec_8);
+  vec_unserialize (m, &l->thumbnail_as_image_data, unserialize_vec_8);
+  unserialize (m, unserialize_asn_position_on_earth, &l->position_on_earth);
+}
+
+static void
 serialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
 {
-  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  asn_app_event_t * es = va_arg (*va, asn_app_event_t *);
   u32 n_users = va_arg (*va, u32);
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
+      serialize (m, serialize_asn_app_gen_user, &es[i].gen_user);
+      serialize (m, serialize_asn_app_location, &es[i].location);
     }
 }
 
 static void
 unserialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
 {
-  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  asn_app_event_t * es = va_arg (*va, asn_app_event_t *);
   u32 n_users = va_arg (*va, u32);
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
+      unserialize (m, unserialize_asn_app_gen_user, &es[i].gen_user);
+      unserialize (m, unserialize_asn_app_location, &es[i].location);
     }
 }
 
@@ -1274,20 +1306,22 @@ static void
 serialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
 {
   asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
-  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  asn_app_event_t * e = va_arg (*va, asn_app_event_t *);
   asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_event];
   serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
-  serialize (m, serialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+  serialize (m, serialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
+  serialize (m, serialize_asn_app_location, &e->location);
 }
 
 static void
 unserialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
 {
   asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
-  asn_app_event_t * u = va_arg (*va, asn_app_event_t *);
+  asn_app_event_t * e = va_arg (*va, asn_app_event_t *);
   asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_event];
   unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_event_for_profile");
-  unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+  unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
+  unserialize (m, unserialize_asn_app_location, &e->location);
 }
 
 static void asn_app_free_user (asn_user_t * au)
@@ -1359,20 +1393,17 @@ static clib_error_t *
 asn_app_user_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
   clib_error_t * error = 0;
-  asn_user_t * au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+  asn_user_t * au;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   void * app_user;
   asn_app_user_type_t * ut;
   serialize_main_t m;
+  u32 is_new_user;
 
-  if (! au)
-    {
-      error = clib_error_return (0, "owner user not found %U", format_hex_bytes, blob->owner, sizeof (blob->owner));
-      goto done;
-    }
+  au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
 
   /* Never update blob for self user. */
-  if (asn_is_user_for_ref (au, &am->self_user_ref))
+  if (au && asn_is_user_for_ref (au, &am->self_user_ref))
     goto done;
 
   serialize_open_data (&m, asn_pdu_contents_for_blob (blob), asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
@@ -1389,18 +1420,28 @@ asn_app_user_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * 
     ut = app_main->user_types + t;
   }
 
+  /* Create user from blob owner. */
+  is_new_user = ! au;
+  if (is_new_user)
+    {
+      asn_crypto_public_keys_t pk;
+      /* FIXME fetch auth key. */
+      memset (&pk, 0, sizeof (pk));
+      memcpy (pk.encrypt_key, blob->owner, sizeof (pk.encrypt_key));
+      au = asn_new_user_with_type (am, ASN_TX, ut->user_type.index,
+                                   /* with_public_keys */ &pk,
+                                   /* with_private_keys */ 0,
+                                   /* with_random_private_keys */ 0);
+    }
+
   app_user = (void *) au - ut->user_type.user_type_offset_of_asn_user;
   error = unserialize (&m, ut->unserialize_blob_contents, app_main, app_user);
   serialize_close (&m);
 
   if (! error && ut->did_update_user)
-    ut->did_update_user (au);
+    ut->did_update_user (au, is_new_user);
 
  done:
-  /* FIXME */
-  if (error)
-    clib_warning ("%U", format_clib_error, error);
-
   return error;
 }
 
