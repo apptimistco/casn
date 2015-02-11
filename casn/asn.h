@@ -674,4 +674,20 @@ serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
 serialize_function_t serialize_asn_position_on_earth, unserialize_asn_position_on_earth;
 
+#define asn_foreach_user_with_type(VAR,T,BODY)                          \
+do {                                                                    \
+  asn_user_type_t * _asn_foreach_user_with_type_ut = (T);               \
+  uword _asn_foreach_user_with_type_i;                                  \
+  vec_foreach_index (_asn_foreach_user_with_type_i, _asn_foreach_user_with_type_ut->user_pool) \
+    {                                                                   \
+      if (! pool_is_free_index (_asn_foreach_user_with_type_ut->user_pool, _asn_foreach_user_with_type_i)) \
+        {                                                               \
+	  VAR = (_asn_foreach_user_with_type_ut->user_pool              \
+                              + _asn_foreach_user_with_type_i*_asn_foreach_user_with_type_ut->user_type_n_bytes \
+                              + _asn_foreach_user_with_type_ut->user_type_offset_of_asn_user); \
+          do { BODY; } while (0);                                       \
+        }                                                               \
+    }                                                                   \
+} while (0)
+
 #endif /* included_asn_h */
