@@ -276,6 +276,8 @@ typedef struct {
 
   serialize_function_t * serialize_blob_contents, * unserialize_blob_contents;
 
+  void (* free_user) (asn_user_t * au);
+
   void (* did_update_user) (asn_user_t * au);
 
   void (* did_add_message) (asn_user_t * to_user);
@@ -332,6 +334,9 @@ asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
 void asn_app_main_init (asn_app_main_t * am);
 void asn_app_main_free (asn_app_main_t * am);
 
+void asn_app_free_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t user_type, u32 user_index);
+clib_error_t * asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_enum_t user_type, u32 user_index);
+
 clib_error_t * asn_app_main_write_to_file (asn_app_main_t * am, char * unix_file);
 clib_error_t * asn_app_main_read_from_file (asn_app_main_t * am, char * unix_file);
 
@@ -342,6 +347,7 @@ void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
 void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, ...);
 
 void asn_app_invalidate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i);
+void asn_app_invalidate_all_attributes (asn_app_attribute_main_t * am, u32 i);
 always_inline void asn_app_validate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 {
   asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
@@ -358,7 +364,7 @@ asn_app_send_text_message_to_user (asn_app_main_t * am,
                                    char * fmt, ...);
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 
-void asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
+clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
 
 serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
 

@@ -459,6 +459,7 @@ unserialize_asn_app_profile_attributes_for_index (serialize_main_t * m, va_list 
                 }
               else
                 f = unserialize_asn_app_attribute_value;
+              asn_app_validate_attribute (am, a - am->attributes, vi);
               unserialize (m, f, am, a - am->attributes, vi);
             }
         }
@@ -477,6 +478,9 @@ void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 {
   asn_app_attribute_t * pa = vec_elt_at_index (am->attributes, ai);
   asn_app_attribute_type_t type = asn_app_attribute_value_type (pa);
+
+  if (! clib_bitmap_get (pa->value_is_valid_bitmap, ui))
+    return 0;
 
   switch (type)
     {
@@ -600,6 +604,16 @@ void asn_app_invalidate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
     default:
       ASSERT (0);
       break;
+    }
+}
+
+void asn_app_invalidate_all_attributes (asn_app_attribute_main_t * am, u32 i)
+{
+  asn_app_attribute_t * a;
+  vec_foreach (a, am->attributes)
+    {
+      if (clib_bitmap_get (a->value_is_valid_bitmap, i))
+        asn_app_invalidate_attribute (am, a - am->attributes, i);
     }
 }
 
@@ -856,6 +870,16 @@ static void asn_app_attribute_main_free (asn_app_attribute_main_t * am)
   vec_free (am->attributes);
   hash_free (am->attribute_by_name);
   vec_free (am->attribute_map_for_unserialize);
+}
+
+void asn_app_free_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t user_type, u32 user_index)
+{
+    asn_app_user_type_t * app_ut = &am->user_types[ASN_APP_USER_TYPE_event];
+    asn_user_type_t * ut = &app_ut->user_type;
+    asn_user_t * au = asn_user_by_index_and_type (user_index, ut->index);
+    ut->free_user (au);
+    asn_app_invalidate_all_attributes (&app_ut->attribute_main, user_index);
+    pool_put_index (ut->user_pool, user_index);
 }
 
 void asn_app_user_type_free (asn_app_user_type_t * t)
@@ -1286,40 +1310,48 @@ static void asn_app_free_event (asn_user_t * au)
 
 static char * asn_app_user_blob_name = "asn_app_user";
 
-void asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index)
+clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index)
 {
   asn_main_t * am = &app_main->asn_main;
   asn_app_user_type_t * app_ut;
   asn_user_type_t * ut;
-  asn_client_socket_t * cs;
   serialize_main_t m;
-  void * au;
+  void * app_user;
+  asn_user_t * au;
   u8 * v;
-  clib_error_t * error;
+  clib_error_t * error = 0;
 
   ASSERT (user_type < ARRAY_LEN (app_main->user_types));
   app_ut = app_main->user_types + user_type;
   ut = &app_ut->user_type;
 
   ASSERT (! pool_is_free_index (ut->user_pool, user_index));
-  au = ut->user_pool + user_index * ut->user_type_n_bytes;
+  app_user = ut->user_pool + user_index * ut->user_type_n_bytes;
+  au = app_user + ut->user_type_offset_of_asn_user;
 
   serialize_open_vector (&m, 0);
   serialize_likely_small_unsigned_integer (&m, user_type);
-  error = serialize (&m, app_ut->serialize_blob_contents, app_main, au);
+  error = serialize (&m, app_ut->serialize_blob_contents, app_main, app_user);
   if (error)
-    clib_error_report (error);
+    goto done;
   v = serialize_close_vector (&m);
 
-  vec_foreach (cs, am->client_sockets)
-    {
-      asn_socket_t * as = asn_socket_at_index (am, cs->socket_index);
-      error = asn_socket_exec (am, as, 0, "blob%c%s%c-%c%c%v", 0, asn_app_user_blob_name, 0, 0, 0, v);
-      if (error)
-        clib_error_report (error);
-    }
+  {
+    u8 * blob_name;
 
+    blob_name = 0;
+    if (! asn_is_user_for_ref (au, &am->self_user_ref))
+      blob_name = format (blob_name, "~%U/",
+                          format_hex_bytes, au->crypto_keys.public.encrypt_key, sizeof (au->crypto_keys.public.encrypt_key));
+    blob_name = format (blob_name, "%s", asn_app_user_blob_name);
+
+    error = asn_socket_exec (am, 0, 0, "blob%c%v%c-%c%c%v", 0, blob_name, 0, 0, 0, v);
+    vec_free (blob_name);
+  }
+
+ done:
   vec_free (v);
+  return error;
 }
 
 /* Handler for blobs written with previous function. */
@@ -1370,6 +1402,84 @@ asn_app_user_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * 
     clib_warning ("%U", format_clib_error, error);
 
   return error;
+}
+
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_app_user_type_enum_t create_user_type;
+  u32 create_user_index;
+} asn_app_create_user_and_blob_ack_handler_t;
+
+static clib_error_t *
+asn_app_create_user_and_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  asn_main_t * am = asn_ah->asn_main;
+  asn_app_create_user_and_blob_ack_handler_t * ah = CONTAINER_OF (asn_ah, asn_app_create_user_and_blob_ack_handler_t, ack_handler);
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  struct {
+    u8 private_encrypt_key[crypto_box_private_key_bytes];
+    u8 private_auth_key[crypto_sign_private_key_bytes];
+    u8 public_encrypt_key[crypto_box_public_key_bytes];
+    u8 public_auth_key[crypto_sign_public_key_bytes];
+  } * keys = (void *) ack->data;
+  asn_app_user_type_t * app_ut;
+  asn_user_type_t * ut;
+  asn_user_t * au;
+
+  ASSERT (ah->create_user_type < ARRAY_LEN (app_main->user_types));
+  app_ut = app_main->user_types + ah->create_user_type;
+  ut = &app_ut->user_type;
+
+  ASSERT (n_bytes_ack_data == sizeof (keys[0]));
+
+  au = asn_user_by_index_and_type (ah->create_user_index, ut->index);
+  ASSERT (au != 0);
+
+  {
+    asn_crypto_keys_t ck;
+
+    memcpy (ck.private.encrypt_key, keys->private_encrypt_key, sizeof (ck.private.encrypt_key));
+    memcpy (ck.private.auth_key, keys->private_auth_key, sizeof (ck.private.auth_key));
+    memcpy (ck.public.encrypt_key, keys->public_encrypt_key, sizeof (ck.public.encrypt_key));
+    memcpy (ck.public.auth_key, keys->public_auth_key, sizeof (ck.public.auth_key));
+
+    asn_user_update_keys (am, ASN_TX, au,
+                          /* with_public_keys */ &ck.public,
+                          /* with_private_keys */ &ck.private,
+                          /* with_random_private_keys */ 0);
+  }
+
+  if (am->verbose)
+    clib_warning ("newuser type %U, user-keys %U %U",
+		  format_asn_user_type, ut->index,
+		  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
+		  format_hex_bytes, au->crypto_keys.public.auth_key, 8);
+
+  if (ut->did_set_user_keys)
+    ut->did_set_user_keys (au);
+
+  return asn_app_user_update_blob (app_main, ah->create_user_type, ah->create_user_index);
+}
+
+clib_error_t *
+asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_enum_t user_type, u32 user_index)
+{
+  asn_app_user_type_t * app_ut;
+  asn_user_type_t * ut;
+  asn_app_create_user_and_blob_ack_handler_t * ah;
+
+  ah = asn_exec_ack_handler_create_with_function_in_container
+    (asn_app_create_user_and_blob_ack_handler,
+     sizeof (ah[0]),
+     STRUCT_OFFSET_OF (asn_app_create_user_and_blob_ack_handler_t, ack_handler));
+  ah->create_user_type = user_type;
+  ah->create_user_index = user_index;
+
+  ASSERT (ah->create_user_type < ARRAY_LEN (am->user_types));
+  app_ut = am->user_types + ah->create_user_type;
+  ut = &app_ut->user_type;
+
+  return asn_socket_exec_with_ack_handler (&am->asn_main, 0, &ah->ack_handler, "newuser%c-b%c%08x", 0, 0, ut->index);
 }
 
 static void asn_app_gen_user_add_message (asn_app_gen_user_t * gu, asn_app_message_union_t * msg)
@@ -1483,7 +1593,6 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
   asn_app_user_type_t * app_ut;
   asn_user_type_t * ut;
   asn_user_t * to_asn_user;
-  asn_client_socket_t * cs;
   asn_app_message_union_t msg;
   u8 * content = 0;
   va_list va;
@@ -1530,16 +1639,10 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
   if (error)
     goto done;
 
-  vec_foreach (cs, am->client_sockets)
-    {
-      asn_socket_t * as = asn_socket_at_index (am, cs->socket_index);
-      error = asn_socket_exec (am, as, 0, "blob%c~%U%c-%c%c%v", 0,
-                               format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
-                               0, 0, 0,
-                               content);
-      if (error)
-        goto done;
-    }
+  error = asn_socket_exec (am, 0, 0, "blob%c~%U%c-%c%c%v", 0,
+                           format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
+                           0, 0, 0,
+                           content);
 
  done:
   vec_free (content);
@@ -1550,6 +1653,7 @@ void asn_app_main_init (asn_app_main_t * am)
 {
   asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "%s", asn_app_user_blob_name);
+  asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "/%s", asn_app_user_blob_name);
 
   if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)
     {

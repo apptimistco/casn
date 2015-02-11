@@ -284,6 +284,15 @@ asn_user_by_ref_as_uword (uword k)
   return asn_user_by_ref (&r);
 }
 
+always_inline struct asn_user_t *
+asn_user_by_index_and_type (u32 user_index, u32 type_index)
+{
+  asn_user_ref_t r;
+  r.type_index = type_index;
+  r.user_index = user_index;
+  return asn_user_by_ref (&r);
+}
+
 always_inline void *
 asn_user_pool_for_user_ref (asn_user_ref_t * r)
 {
@@ -485,33 +494,9 @@ typedef struct asn_socket_t {
   asn_session_state_t session_state;
 
   u32 client_socket_index;
-
-  u32 unknown_self_user_newuser_in_progress : 1;
 } asn_socket_t;
 
-always_inline void
-asn_socket_free (asn_socket_t * as)
-{
-  asn_pdu_t * p;
-  vec_free (as->rx_pdu);
-  vec_free (as->rx_frame);
-  vec_foreach (p, as->tx_pdus)
-    asn_pdu_free (p);
-  vec_free (as->tx_pdus);
-
-  {
-    uword i;
-    vec_foreach_index (i, as->exec_ack_handler_pool)
-      {
-        if (! pool_is_free_index (as->exec_ack_handler_pool, i))
-          {
-            asn_exec_ack_handler_t * ah = as->exec_ack_handler_pool[i];
-            clib_mem_free_in_container (ah, ah->container_offset_of_object);
-          }
-      }
-    pool_free (as->exec_ack_handler_pool);
-  }
-}
+void asn_socket_free (asn_socket_t * as);
 
 typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);
 
@@ -529,14 +514,12 @@ typedef enum {
 } asn_socket_type_t;
 
 typedef struct {
-  u8 is_logged_in;
-  u8 login_in_progress;
-  asn_user_ref_t user_ref;
-} asn_client_socket_login_user_t;
-
-typedef struct {
   /* Index in pool. */
   u32 socket_index;
+
+  u32 self_user_login_in_progress : 1;
+  u32 self_user_logged_in : 1;
+  u32 unknown_self_user_newuser_in_progress : 1;
 
   asn_socket_type_t socket_type;
 
@@ -546,26 +529,12 @@ typedef struct {
   } timestamps;
 
   u8 * socket_config;
-
-  asn_client_socket_login_user_t * login_users;
-
-  uword * login_user_index_by_user_ref;
 } asn_client_socket_t;
-
-always_inline asn_client_socket_login_user_t *
-asn_client_socket_login_user_by_ref (asn_client_socket_t * cs, asn_user_ref_t * r)
-{
-  uword k = asn_user_ref_as_uword (r);
-  uword * p = hash_get (cs->login_user_index_by_user_ref, k);
-  return p ? vec_elt_at_index (cs->login_users, p[0]) : 0;
-}
 
 always_inline void
 asn_client_socket_free (asn_client_socket_t * s)
 {
   vec_free (s->socket_config);
-  hash_free (s->login_user_index_by_user_ref);
-  vec_free (s->login_users);
 }
 
 typedef struct asn_main_t {
