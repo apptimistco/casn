@@ -672,5 +672,6 @@ format_function_t format_asn_user_type, format_asn_user_mark_response;
 serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
+serialize_function_t serialize_asn_position_on_earth, unserialize_asn_position_on_earth;
 
 #endif /* included_asn_h */

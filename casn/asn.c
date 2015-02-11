@@ -1673,6 +1673,20 @@ void asn_user_type_free (asn_user_type_t * t)
   pool_free (t->user_pool);
 }
 
+void serialize_asn_position_on_earth (serialize_main_t * m, va_list * va)
+{
+  asn_position_on_earth_t * p = va_arg (*va, asn_position_on_earth_t *);
+  serialize (m, serialize_f64, p->latitude);
+  serialize (m, serialize_f64, p->longitude);
+}
+
+void unserialize_asn_position_on_earth (serialize_main_t * m, va_list * va)
+{
+  asn_position_on_earth_t * p = va_arg (*va, asn_position_on_earth_t *);
+  unserialize (m, unserialize_f64, &p->latitude);
+  unserialize (m, unserialize_f64, &p->longitude);
+}
+
 void serialize_asn_user (serialize_main_t * m, va_list * va)
 {
   asn_user_t * u = va_arg (*va, asn_user_t *);
