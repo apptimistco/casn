@@ -172,6 +172,9 @@ typedef struct {
   asn_app_photo_t * photos;
 
   asn_app_message_union_t * messages;
+
+  /* Hash map of unique time stamp in nsec since 1970 to message index. */
+  mhash_t message_index_by_time_stamp;
 } asn_app_gen_user_t;
 
 always_inline void asn_app_gen_user_set_position (asn_app_gen_user_t * u, asn_position_on_earth_t pos)
@@ -193,6 +196,7 @@ always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
   }
 
   asn_app_message_union_vector_free (&u->messages);
+  mhash_free (&u->message_index_by_time_stamp);
 }
 
 typedef struct {

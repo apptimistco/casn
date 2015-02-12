@@ -951,7 +951,7 @@ static void serialize_asn_app_message (serialize_main_t * m, va_list * va)
   if (is_save_restore)
     {
       serialize_likely_small_unsigned_integer (m, h->from_user_index);
-      serialize_integer (m, h->time_stamp_in_nsec_from_1970, sizeof (h->time_stamp_in_nsec_from_1970));
+      serialize (m, serialize_64, h->time_stamp_in_nsec_from_1970);
     }
 
   switch (h->type)
@@ -986,7 +986,7 @@ static void unserialize_asn_app_message (serialize_main_t * m, va_list * va)
   if (is_save_restore)
     {
       h->from_user_index = unserialize_likely_small_unsigned_integer (m);
-      unserialize_integer (m, &h->time_stamp_in_nsec_from_1970, sizeof (h->time_stamp_in_nsec_from_1970));
+      unserialize (m, unserialize_64, &h->time_stamp_in_nsec_from_1970);
     }
 
   switch (h->type)
@@ -1054,6 +1054,17 @@ unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
   unserialize (m, unserialize_asn_user, &u->asn_user);
   vec_unserialize (m, &u->photos, unserialize_vec_asn_app_photo);
   vec_unserialize (m, &u->messages, unserialize_vec_asn_app_message);
+
+  {
+    uword i;
+
+    mhash_init (&u->message_index_by_time_stamp,
+                /* value size */ sizeof (uword),
+                /* key size */ sizeof (u->messages[0].header.time_stamp_in_nsec_from_1970));
+
+    for (i = 0; i < vec_len (u->messages); i++)
+      mhash_set (&u->message_index_by_time_stamp, &u->messages[i].header.time_stamp_in_nsec_from_1970, i, /* old_value */ 0);
+  }
 
   asn_ut = pool_elt (asn_user_type_pool, u->asn_user.user_type_index);
   ut = CONTAINER_OF (asn_ut, asn_app_user_type_t, user_type);
@@ -1525,15 +1536,21 @@ asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_e
 
 static void asn_app_gen_user_add_message (asn_app_gen_user_t * gu, asn_app_message_union_t * msg)
 {
-  uword i;
+  uword message_index, * p;
   u64 ts = msg->header.time_stamp_in_nsec_from_1970;
 
-  /* FIXME hash table. */
-  vec_foreach_index (i, gu->messages)
-    if (gu->messages[i].header.time_stamp_in_nsec_from_1970 == ts)
-      return;
+  if (! gu->message_index_by_time_stamp.hash)
+    mhash_init (&gu->message_index_by_time_stamp,
+                /* value size */ sizeof (uword),
+                /* key size */ sizeof (msg->header.time_stamp_in_nsec_from_1970));
 
+  else if ((p = mhash_get (&gu->message_index_by_time_stamp, &ts)))
+    return;
+
+  message_index = vec_len (gu->messages);
   vec_add1 (gu->messages, msg[0]);
+  mhash_set (&gu->message_index_by_time_stamp, &ts, message_index, /* old_value */ 0);
+
 }
 
 static clib_error_t * rx_message (asn_main_t * am,
