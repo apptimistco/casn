@@ -143,6 +143,8 @@ typedef enum {
 typedef CLIB_PACKED (struct {
   asn_pdu_header_t header;
 
+  u64 time_stamp_in_nsec_from_1970;
+
   /* ASN_ACK_PDU_STATUS_* */
   u8 status;
 
@@ -554,6 +556,9 @@ typedef struct asn_main_t {
 
   /* Index and user type of self user. */
   asn_user_ref_t self_user_ref;
+
+  /* Last received time stamp from ack. */
+  u64 last_rx_ack_time_stamp_in_nsec_from_1970;
 
   uword * user_ref_by_public_encrypt_key[ASN_N_RX_TX];
   uword * user_ref_by_public_encrypt_key_first_7_bytes[ASN_N_RX_TX];

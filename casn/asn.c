@@ -681,6 +681,8 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
   uword is_error = ack->status != ASN_ACK_PDU_STATUS_success;
   asn_pdu_id_t acked_pdu_id = ack->header.generic_request_id.id;
 
+  am->last_rx_ack_time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
+
   switch (acked_pdu_id)
     {
     case ASN_PDU_login:
@@ -788,12 +790,20 @@ static u8 * format_asn_ack_pdu_status (u8 * s, va_list * va)
   return s;
 }
 
+static u8 * format_asn_time_stamp (u8 * s, va_list * va)
+{
+  u64 ts = va_arg (*va, u64);
+  f64 t = clib_net_to_host_u64 (ts) * 1e-9;
+  return format (s, "%U", format_time_float, "y/m/d H:M:S:F", t);
+}
+
 static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
 {
   asn_pdu_ack_t * ack = va_arg (*va, asn_pdu_ack_t *);
   u32 n_bytes = va_arg (*va, u32);
 
-  s = format (s, "request: %U, status: %U",
+  s = format (s, "%U: request: %U, status: %U",
+              format_asn_time_stamp, ack->time_stamp_in_nsec_from_1970,
               format_asn_pdu_id, ack->header.generic_request_id.id,
               format_asn_ack_pdu_status, ack->status);
 
@@ -832,13 +842,6 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
     }
 
   return error;
-}
-
-static u8 * format_asn_time_stamp (u8 * s, va_list * va)
-{
-  u64 ts = va_arg (*va, u64);
-  f64 t = clib_net_to_host_u64 (ts) * 1e-9;
-  return format (s, "%U", format_time_float, "y/m/d H:M:S:F", t);
 }
 
 static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
@@ -1772,10 +1775,12 @@ void serialize_asn_main (serialize_main_t * m, va_list * va)
 {
   asn_main_t * am = va_arg (*va, asn_main_t *);
   serialize_integer (m, am->self_user_ref.user_index, sizeof (u32));
+  serialize (m, serialize_64, am->last_rx_ack_time_stamp_in_nsec_from_1970);
 }
 
 void unserialize_asn_main (serialize_main_t * m, va_list * va)
 {
   asn_main_t * am = va_arg (*va, asn_main_t *);
   unserialize_integer (m, &am->self_user_ref.user_index, sizeof (u32));
+  unserialize (m, unserialize_64, &am->last_rx_ack_time_stamp_in_nsec_from_1970);
 }
