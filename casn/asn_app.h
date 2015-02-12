@@ -45,6 +45,7 @@ typedef enum {
 #define _(f) ASN_APP_MESSAGE_TYPE_##f,
   foreach_asn_app_message_type
 #undef _
+  ASN_APP_N_MESSAGE_TYPE,
 } asn_app_message_type_t;
 
 typedef struct {
@@ -101,11 +102,15 @@ typedef union {
 
 always_inline void asn_app_message_union_free (asn_app_message_union_t * m)
 {
-  switch (m->header.type) {
+  switch (m->header.type)
+    {
 #define _(f) case ASN_APP_MESSAGE_TYPE_##f: asn_app_##f##_message_free (&m->f); break;
-    foreach_asn_app_message_type;
+      foreach_asn_app_message_type;
 #undef _
-  }
+    default:
+      ASSERT (0);
+      break;
+    }
 }
 
 always_inline void asn_app_message_union_vector_free (asn_app_message_union_t ** mv)
@@ -361,8 +366,13 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
 clib_error_t *
-asn_app_send_text_message_to_user (asn_app_main_t * am,
-                                   asn_app_user_type_enum_t to_user_type, u32 to_user_index,
+asn_app_send_message_to_user (asn_app_main_t * am,
+                              asn_app_user_type_enum_t to_user_type, u32 to_user_index,
+                              asn_app_message_union_t * msg);
+clib_error_t *
+asn_app_send_text_message_to_user (asn_app_main_t * app_main,
+                                   asn_app_user_type_enum_t to_user_type,
+                                   u32 to_user_index,
                                    char * fmt, ...);
 int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 

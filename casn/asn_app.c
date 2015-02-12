@@ -972,6 +972,10 @@ static void serialize_asn_app_message (serialize_main_t * m, va_list * va)
     case ASN_APP_MESSAGE_TYPE_friend_request:
       /* nothing to do. */
       break;
+
+    default:
+      ASSERT (0);
+      break;
     }
 }
 
@@ -1510,6 +1514,9 @@ asn_app_create_user_and_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_p
   if (ut->did_set_user_keys)
     ut->did_set_user_keys (au);
 
+  if (app_ut->did_update_user)
+    app_ut->did_update_user (au, /* is_new_user */ 1);
+
   return asn_app_user_update_blob (app_main, ah->create_user_type, ah->create_user_index);
 }
 
@@ -1553,10 +1560,11 @@ static void asn_app_gen_user_add_message (asn_app_gen_user_t * gu, asn_app_messa
 
 }
 
-static clib_error_t * rx_message (asn_main_t * am,
-                                  asn_user_t * src_au,
-                                  asn_user_t * dst_au,
-                                  asn_app_message_union_t * msg)
+static clib_error_t *
+rx_message (asn_main_t * am,
+            asn_user_t * src_au,
+            asn_user_t * dst_au,
+            asn_app_message_union_t * msg)
 {
   clib_error_t * error = 0;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
@@ -1639,67 +1647,117 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
   return error;
 }
 
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_app_message_union_t msg_sent;
+  asn_user_ref_t to_user_ref;
+} asn_app_send_message_blob_ack_handler_t;
+
+static clib_error_t *
+asn_app_send_message_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  asn_main_t * am = asn_ah->asn_main;
+  asn_app_send_message_blob_ack_handler_t * ah = CONTAINER_OF (asn_ah, asn_app_send_message_blob_ack_handler_t, ack_handler);
+  asn_user_t * src_au, * dst_au;
+
+  src_au = asn_user_by_ref (&am->self_user_ref);
+  dst_au = asn_user_by_ref (&ah->to_user_ref);
+
+  ah->msg_sent.header.time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
+
+  if (am->verbose)
+    clib_warning ("sent from self to user: type %U, key %U",
+		  format_asn_user_type, dst_au->index,
+		  format_hex_bytes, dst_au->crypto_keys.public.encrypt_key, 8);
+
+  return rx_message (am, src_au, dst_au, &ah->msg_sent);
+}
+
 clib_error_t *
-asn_app_send_text_message_to_user (asn_app_main_t * app_main,
-                                   asn_app_user_type_enum_t to_user_type,
-                                   u32 to_user_index,
-                                   char * fmt, ...)
+asn_app_send_message_to_user (asn_app_main_t * app_main,
+                              asn_app_user_type_enum_t to_user_type,
+                              u32 to_user_index,
+                              asn_app_message_union_t * msg)
 {
   clib_error_t * error = 0;
   asn_main_t * am = &app_main->asn_main;
   asn_app_user_type_t * app_ut;
   asn_user_type_t * ut;
   asn_user_t * to_asn_user;
-  asn_app_message_union_t msg;
   u8 * content = 0;
-  va_list va;
+  asn_user_ref_t to_user_ref;
 
   ASSERT (to_user_type < ARRAY_LEN (app_main->user_types));
   app_ut = app_main->user_types + to_user_type;
   ut = &app_ut->user_type;
 
-  {
-    asn_user_ref_t r = {
-      .user_index = to_user_index,
-      .type_index = ut->index,
-    };
+  to_user_ref.user_index = to_user_index;
+  to_user_ref.type_index = ut->index;
 
-    to_asn_user = asn_user_by_ref (&r);
-    if (! to_asn_user)
-      {
-        error = clib_error_return (0, "unknown user with type %U and index %d",
-                                   format_asn_app_user_type_enum, to_user_type,
-                                   to_user_index);
-        goto done;
-      }
-  }
+  to_asn_user = asn_user_by_ref (&to_user_ref);
+  if (! to_asn_user)
+    {
+      error = clib_error_return (0, "unknown user with type %U and index %d",
+                                 format_asn_app_user_type_enum, to_user_type,
+                                 to_user_index);
+      goto done;
+    }
 
-  memset (&msg, 0, sizeof (msg));
-
-  va_start (va, fmt);
-  msg.header.type = ASN_APP_MESSAGE_TYPE_text;
-  msg.header.from_user_index = am->self_user_ref.user_index;
-  msg.header.time_stamp_in_nsec_from_1970 = 0;
-  msg.text.text = va_format (0, fmt, &va);
-  va_end (va);
+  ASSERT (msg->header.type < ASN_APP_N_MESSAGE_TYPE);
+  msg->header.from_user_index = am->self_user_ref.user_index;
+  msg->header.time_stamp_in_nsec_from_1970 = 0; /* will be filled in by ack handler */
 
   {
     serialize_main_t sm;
     serialize_open_vector (&sm, 0);
-    error = serialize (&sm, serialize_asn_app_message, &msg, /* is_save_restore */ 0);
+    error = serialize (&sm, serialize_asn_app_message, msg, /* is_save_restore */ 0);
     if (error)
       goto done;
     content = serialize_close_vector (&sm);
   }
 
-  error = asn_socket_exec (am, 0, 0, "blob%c~%U%c-%c%c%v", 0,
-                           format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
-                           0, 0, 0,
-                           content);
+  {
+    asn_app_send_message_blob_ack_handler_t * ah;
+
+    ah = asn_exec_ack_handler_create_with_function_in_container
+      (asn_app_send_message_blob_ack_handler,
+       sizeof (ah[0]),
+       STRUCT_OFFSET_OF (asn_app_send_message_blob_ack_handler_t, ack_handler));
+
+    ah->to_user_ref = to_user_ref;
+    ah->msg_sent = msg[0];
+
+    error = asn_socket_exec_with_ack_handler
+      (am, /* all client sockets */ 0,
+       &ah->ack_handler,
+       "blob%c~%U%c-%c%c%v", 0,
+       format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
+       0, 0, 0,
+       content);
+  }
 
  done:
   vec_free (content);
   return error;
+}
+
+clib_error_t *
+asn_app_send_text_message_to_user (asn_app_main_t * app_main,
+                                   asn_app_user_type_enum_t to_user_type,
+                                   u32 to_user_index,
+                                   char * fmt, ...)
+{
+  asn_app_message_union_t msg;
+  va_list va;
+
+  memset (&msg, 0, sizeof (msg));
+  msg.header.type = ASN_APP_MESSAGE_TYPE_text;
+
+  va_start (va, fmt);
+  msg.text.text = va_format (0, fmt, &va);
+  va_end (va);
+
+  return asn_app_send_message_to_user (app_main, to_user_type, to_user_index, &msg);
 }
 
 void asn_app_main_init (asn_app_main_t * am)
