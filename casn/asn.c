@@ -1147,14 +1147,14 @@ static void asn_main_connection_will_close (websocket_main_t * wsm, websocket_so
     }
 }
 
-clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 client_socket_index)
+clib_error_t * asn_add_connection (asn_main_t * am, u8 * connect_to_url, u32 client_socket_index)
 {
   websocket_main_t * wsm = &am->websocket_main;
   websocket_socket_t * ws;
   asn_socket_t * as;
   clib_error_t * error = 0;
 
-  error = websocket_client_add_connection (wsm, &ws, "ws://%s/asn/siren.ws", socket_config);
+  error = websocket_client_add_connection (wsm, &ws, "%s", connect_to_url);
   if (error)
     return error;
 
@@ -1166,10 +1166,11 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
 
   {
     asn_client_socket_t * cs;
+    u8 * connect_to_url_copy;
     int is_first_connection_attempt = client_socket_index == ~0;
 
-    /* Make a copy now in case socket_config == cs->socket_config which can be freed below (*). */
-    socket_config = format (0, "%s%c", socket_config, 0);
+    /* Make a copy now in case connect_to_url == cs->connect_to_url which can be freed below (*). */
+    connect_to_url_copy = format (0, "%s", connect_to_url);
 
     if (client_socket_index == ~0)
       vec_add2 (am->client_sockets, cs, 1);
@@ -1181,8 +1182,8 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
 
     as->client_socket_index = cs - am->client_sockets;
     cs->socket_index = ws->index;
-    cs->socket_config = socket_config;
     cs->socket_type = ASN_SOCKET_TYPE_websocket;
+    cs->connect_to_url = connect_to_url_copy;
     if (is_first_connection_attempt)
       cs->timestamps.open = unix_time_now ();
 
@@ -1190,11 +1191,11 @@ clib_error_t * asn_add_connection (asn_main_t * am, u8 * socket_config, u32 clie
       {
 	f64 now = unix_time_now ();
 	if (is_first_connection_attempt)
-	  clib_warning ("%U: trying connection to %s", format_time_float, 0, now, cs->socket_config);
+	  clib_warning ("%U: trying connection to %s", format_time_float, 0, now, cs->connect_to_url);
 	else
 	  clib_warning ("%U: re-trying connection to %s, backoff %.4f",
 			format_time_float, 0, now, 
-			cs->socket_config, cs->timestamps.backoff);
+			cs->connect_to_url, cs->timestamps.backoff);
       }
   }
 
@@ -1356,7 +1357,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout)
 	{
 	  if (now > cs->timestamps.next_connect_attempt)
 	    {
-	      error = asn_add_connection (am, cs->socket_config, cs - am->client_sockets);
+	      error = asn_add_connection (am, cs->connect_to_url, cs - am->client_sockets);
 	      if (error)
 		goto done;
 	    }

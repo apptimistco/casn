@@ -530,13 +530,13 @@ typedef struct {
     f64 last_profile_fetch;
   } timestamps;
 
-  u8 * socket_config;
+  u8 * connect_to_url;
 } asn_client_socket_t;
 
 always_inline void
 asn_client_socket_free (asn_client_socket_t * s)
 {
-  vec_free (s->socket_config);
+  vec_free (s->connect_to_url);
 }
 
 typedef struct asn_main_t {

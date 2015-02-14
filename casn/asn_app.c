@@ -1359,7 +1359,11 @@ static void asn_app_free_event (asn_user_t * au)
 
 static char * asn_app_user_blob_name = "asn_app_user";
 
-clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index)
+static clib_error_t *
+asn_app_user_update_blob_helper (asn_app_main_t * app_main,
+                                 asn_app_user_type_enum_t user_type,
+                                 u32 user_index,
+                                 u32 is_new_user)
 {
   asn_main_t * am = &app_main->asn_main;
   asn_app_user_type_t * app_ut;
@@ -1398,10 +1402,17 @@ clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user
     vec_free (blob_name);
   }
 
+  if (app_ut->did_update_user)
+    app_ut->did_update_user (au, is_new_user);
+
  done:
   vec_free (v);
   return error;
 }
+
+clib_error_t *
+asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index)
+{ return asn_app_user_update_blob_helper (app_main, user_type, user_index, /* is_new_user */ 0); }
 
 /* Handler for blobs written with previous function. */
 static clib_error_t *
@@ -1514,10 +1525,7 @@ asn_app_create_user_and_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_p
   if (ut->did_set_user_keys)
     ut->did_set_user_keys (au);
 
-  if (app_ut->did_update_user)
-    app_ut->did_update_user (au, /* is_new_user */ 1);
-
-  return asn_app_user_update_blob (app_main, ah->create_user_type, ah->create_user_index);
+  return asn_app_user_update_blob_helper (app_main, ah->create_user_type, ah->create_user_index, /* is_new_user */ 1);
 }
 
 clib_error_t *
