@@ -898,142 +898,172 @@ void asn_app_main_free (asn_app_main_t * am)
   }
 }
 
-int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1)
+void asn_app_user_messages_free (asn_app_user_messages_t * m)
 {
-  i64 cmp = m0->header.time_stamp_in_nsec_from_1970 - m1->header.time_stamp_in_nsec_from_1970;
-  return cmp > 0 ? +1 : (cmp < 0 ? -1 : 0);
-}
-
-static void serialize_asn_app_text_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
-  vec_serialize (m, msg->text, serialize_vec_8);
-}
-
-static void unserialize_asn_app_text_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
-  vec_unserialize (m, &msg->text, unserialize_vec_8);
-}
-
-static void serialize_asn_app_photo_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_photo_message_t * msg = va_arg (*va, asn_app_photo_message_t *);
-  serialize (m, serialize_vec_asn_app_photo, &msg->photo, /* count */ 1);
-}
-
-static void unserialize_asn_app_photo_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_photo_message_t * msg = va_arg (*va, asn_app_photo_message_t *);
-  unserialize (m, unserialize_vec_asn_app_photo, &msg->photo, /* count */ 1);
-}
-
-static void serialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
-  ASSERT (! msg);
-}
-
-static void unserialize_asn_app_user_group_add_del_request_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_user_group_add_del_request_message_t * msg = va_arg (*va, asn_app_user_group_add_del_request_message_t *);
-  ASSERT (! msg);
-}
-
-static void serialize_asn_app_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_message_union_t * msg = va_arg (*va, asn_app_message_union_t *);
-  u32 is_save_restore = va_arg (*va, u32);
-  asn_app_message_header_t * h = &msg->header;
-
-  /* User and time stamp will be copied to blob header and sent to ASN server. */
-  serialize_likely_small_unsigned_integer (m, h->type);
-  if (is_save_restore)
+  uword ti, ui;
+  vec_foreach_index (ti, m->message_pool_by_type)
     {
-      serialize_likely_small_unsigned_integer (m, h->from_user_index);
-      serialize (m, serialize_64, h->time_stamp_in_nsec_from_1970);
+      void * msg_pool = m->message_pool_by_type[ti];
+      asn_app_message_type_t * mt;
+      if (pool_is_free_index (msg_pool, ti))
+        continue;
+      mt = pool_elt (asn_app_message_type_pool, ti);
+      if (mt->free)
+        vec_foreach_index (ui, msg_pool)
+          {
+            asn_app_message_header_t * msg = msg_pool + mt->user_msg_n_bytes * ui + mt->user_msg_offset_of_message_header;
+            mt->free (msg);
+          }
+      pool_free (msg_pool);
     }
-
-  switch (h->type)
-    {
-    case ASN_APP_MESSAGE_TYPE_text:
-      serialize (m, serialize_asn_app_text_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_photo:
-    case ASN_APP_MESSAGE_TYPE_video:
-      serialize (m, serialize_asn_app_photo_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_user_group_add_del_request:
-      serialize (m, serialize_asn_app_user_group_add_del_request_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_friend_request:
-      /* nothing to do. */
-      break;
-
-    default:
-      ASSERT (0);
-      break;
-    }
+  vec_free (m->message_pool_by_type);
+  mhash_free (&m->message_ref_by_time_stamp);
+  memset (m, 0, sizeof (m[0]));
 }
 
-static void unserialize_asn_app_message (serialize_main_t * m, va_list * va)
+static void serialize_asn_app_message_header (serialize_main_t * m, va_list * va)
 {
-  asn_app_message_union_t * msg = va_arg (*va, asn_app_message_union_t *);
-  u32 is_save_restore = va_arg (*va, u32);
-  asn_app_message_header_t * h = &msg->header;
+  asn_app_message_header_t * h = va_arg (*va, asn_app_message_header_t *);
 
-  memset (msg, 0, sizeof (msg[0]));
-  h->type = unserialize_likely_small_unsigned_integer (m);
-  if (is_save_restore)
-    {
-      h->from_user_index = unserialize_likely_small_unsigned_integer (m);
-      unserialize (m, unserialize_64, &h->time_stamp_in_nsec_from_1970);
-    }
-
-  switch (h->type)
-    {
-    case ASN_APP_MESSAGE_TYPE_text:
-      unserialize (m, unserialize_asn_app_text_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_photo:
-    case ASN_APP_MESSAGE_TYPE_video:
-      unserialize (m, unserialize_asn_app_photo_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_user_group_add_del_request:
-      unserialize (m, unserialize_asn_app_user_group_add_del_request_message, msg);
-      break;
-
-    case ASN_APP_MESSAGE_TYPE_friend_request:
-      /* nothing to do. */
-      break;
-
-    default:
-      serialize_error_return (m, "unknown message type 0x%x", msg->header.type);
-      break;
-    }
+  serialize_likely_small_unsigned_integer (m, h->ref.type_index);
+  serialize_likely_small_unsigned_integer (m, h->from_user_index);
+  serialize (m, serialize_64, h->time_stamp_in_nsec_from_1970);
 }
 
-static void serialize_vec_asn_app_message (serialize_main_t * m, va_list * va)
+static void unserialize_asn_app_message_header (serialize_main_t * m, va_list * va)
 {
-  asn_app_message_union_t * msgs = va_arg (*va, asn_app_message_union_t *);
-  u32 n = va_arg (*va, u32);
+  asn_app_message_header_t * h = va_arg (*va, asn_app_message_header_t *);
+  
+  memset (h, 0, sizeof (h[0]));
+  h->ref.type_index = unserialize_likely_small_unsigned_integer (m);
+  h->from_user_index = unserialize_likely_small_unsigned_integer (m);
+  unserialize (m, unserialize_64, &h->time_stamp_in_nsec_from_1970);
+}
+
+static void serialize_pool_asn_app_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_message_type_t * mt = va_arg (*va, asn_app_message_type_t *);
+  void * msgs = va_arg (*va, void *);
+  u32 n_msgs = va_arg (*va, u32);
+  void * u = msgs;
   u32 i;
-  for (i = 0; i < n; i++)
-    serialize (m, serialize_asn_app_message, &msgs[i], /* is_save_restore */ 1);
+  for (i = 0; i < n_msgs; i++)
+    {
+      asn_app_message_header_t * h = u + mt->user_msg_offset_of_message_header;
+      serialize (m, serialize_asn_app_message_header, h);
+      if (mt->serialize)
+        serialize (m, mt->serialize, u);
+      u += mt->user_msg_n_bytes;
+    }
 }
 
-static void unserialize_vec_asn_app_message (serialize_main_t * m, va_list * va)
+static void unserialize_pool_asn_app_message (serialize_main_t * m, va_list * va)
 {
-  asn_app_message_union_t * msgs = va_arg (*va, asn_app_message_union_t *);
-  u32 n = va_arg (*va, u32);
+  asn_app_message_type_t * mt = va_arg (*va, asn_app_message_type_t *);
+  void * msgs = va_arg (*va, void *);
+  u32 n_msgs = va_arg (*va, u32);
+  void * u = msgs;
   u32 i;
-  for (i = 0; i < n; i++)
-    unserialize (m, unserialize_asn_app_message, &msgs[i], /* is_save_restore */ 1);
+  for (i = 0; i < n_msgs; i++)
+    {
+      asn_app_message_header_t * h = u + mt->user_msg_offset_of_message_header;
+      unserialize (m, unserialize_asn_app_message_header, h);
+      if (mt->unserialize)
+        unserialize (m, mt->unserialize, u);
+      u += mt->user_msg_n_bytes;
+    }
+}
+
+static void serialize_asn_app_user_messages (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_messages_t * msgs = va_arg (*va, asn_app_user_messages_t *);
+  asn_app_message_type_t * mt;
+  uword ti;
+  vec_foreach_index (ti, msgs->message_pool_by_type)
+    {
+      mt = pool_elt (asn_app_message_type_pool, ti);
+      serialize_cstring (m, mt->name);
+      serialize (m, serialize_pool_with_arg, msgs->message_pool_by_type[ti], mt->user_msg_n_bytes,
+                 serialize_pool_asn_app_message, mt);
+    }
+  serialize_cstring (m, "");
+}
+
+static uword
+asn_app_add_user_message (asn_app_user_messages_t * um,
+                          asn_app_message_header_t * h,
+                          uword maybe_duplicate)
+{
+  uword was_duplicate = 0;
+
+  ASSERT (h->time_stamp_in_nsec_from_1970 != 0);
+
+  if (! um->message_ref_by_time_stamp.hash)
+    mhash_init (&um->message_ref_by_time_stamp,
+                /* value size */ sizeof (asn_app_message_ref_t),
+                /* key size */ STRUCT_SIZE_OF (asn_app_message_header_t, time_stamp_in_nsec_from_1970));
+
+  if (maybe_duplicate
+      && mhash_get (&um->message_ref_by_time_stamp, &h->time_stamp_in_nsec_from_1970))
+    was_duplicate = 1;
+  else
+    {
+      mhash_set_mem (&um->message_ref_by_time_stamp, &h->time_stamp_in_nsec_from_1970,
+                     (uword *) &h->ref, /* old_value */ 0);
+
+      if (h->time_stamp_in_nsec_from_1970 > um->most_recent_msg_header.time_stamp_in_nsec_from_1970)
+        um->most_recent_msg_header = h[0];
+    }
+
+  return was_duplicate;
+}
+
+static void unserialize_asn_app_user_messages (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_messages_t * msgs = va_arg (*va, asn_app_user_messages_t *);
+  asn_app_message_type_t * mt;
+  while (1)
+    {
+      char * name;
+      clib_error_t * error = 0;
+      uword i, is_terminal;
+
+      unserialize_cstring (m, &name);
+      is_terminal = vec_len (name) == 0;
+      mt = 0;
+      if (! is_terminal)
+        {
+          mt = asn_app_message_type_by_name (name);
+          if (! mt)
+            error = clib_error_return (0, "unknown message type %s", name);
+        }
+      vec_free (name);
+      if (error)
+        serialize_error (&m->header, error);
+
+      if (is_terminal)
+        break;
+
+      vec_validate (msgs->message_pool_by_type, mt->index);
+      unserialize (m, unserialize_pool_with_arg,
+                   &msgs->message_pool_by_type[mt->index],
+                   mt->user_msg_n_bytes,
+                   unserialize_pool_asn_app_message, mt);
+
+      for (i = 0; i < vec_len (msgs->message_pool_by_type[mt->index]); i++)
+        {
+          if (pool_is_free_index (msgs->message_pool_by_type[mt->index], i))
+            continue;
+
+          asn_app_message_header_t * h = (msgs->message_pool_by_type[mt->index]
+                                          + i*mt->user_msg_n_bytes
+                                          + mt->user_msg_offset_of_message_header);
+
+          h->ref.pool_index = i;
+
+          asn_app_add_user_message (msgs, h, /* maybe_duplicate */ 0);
+        }
+    }
 }
 
 static void
@@ -1045,7 +1075,7 @@ serialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
 
   serialize (m, serialize_asn_user, &u->asn_user);
   vec_serialize (m, u->photos, serialize_vec_asn_app_photo);
-  vec_serialize (m, u->messages, serialize_vec_asn_app_message);
+  serialize (m, serialize_asn_app_user_messages, &u->user_messages);
   serialize (m, serialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
 }
 
@@ -1057,18 +1087,7 @@ unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
   asn_app_user_type_t * ut;
   unserialize (m, unserialize_asn_user, &u->asn_user);
   vec_unserialize (m, &u->photos, unserialize_vec_asn_app_photo);
-  vec_unserialize (m, &u->messages, unserialize_vec_asn_app_message);
-
-  {
-    uword i;
-
-    mhash_init (&u->message_index_by_time_stamp,
-                /* value size */ sizeof (uword),
-                /* key size */ sizeof (u->messages[0].header.time_stamp_in_nsec_from_1970));
-
-    for (i = 0; i < vec_len (u->messages); i++)
-      mhash_set (&u->message_index_by_time_stamp, &u->messages[i].header.time_stamp_in_nsec_from_1970, i, /* old_value */ 0);
-  }
+  unserialize (m, unserialize_asn_app_user_messages, &u->user_messages);
 
   asn_ut = pool_elt (asn_user_type_pool, u->asn_user.user_type_index);
   ut = CONTAINER_OF (asn_ut, asn_app_user_type_t, user_type);
@@ -1108,6 +1127,12 @@ serialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
+
+      {
+        hash_pair_t * p;
+        serialize_likely_small_unsigned_integer (m, hash_elts (u[i].group_users));
+        hash_foreach_pair (p, u[i].group_users, serialize_likely_small_unsigned_integer (m, p->key));
+      }
     }
 }
 
@@ -1120,6 +1145,19 @@ unserialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
+
+      {
+        uword j, user_index, n_group_users = unserialize_likely_small_unsigned_integer (m);
+        if (n_group_users > 0)
+          {
+            u[i].group_users = hash_create (sizeof (uword), /* value bytes */ 0);
+            for (j = 0; j < n_group_users; j++)
+              {
+                user_index = unserialize_likely_small_unsigned_integer (m);
+                hash_set1 (u[i].group_users, user_index);
+              }
+          }
+      }
     }
 }
 
@@ -1549,77 +1587,6 @@ asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_e
   return asn_socket_exec_with_ack_handler (&am->asn_main, 0, &ah->ack_handler, "newuser%c-b%c%08x", 0, 0, ut->index);
 }
 
-static void asn_app_gen_user_add_message (asn_app_gen_user_t * gu, asn_app_message_union_t * msg)
-{
-  uword message_index, * p;
-  u64 ts = msg->header.time_stamp_in_nsec_from_1970;
-
-  if (! gu->message_index_by_time_stamp.hash)
-    mhash_init (&gu->message_index_by_time_stamp,
-                /* value size */ sizeof (uword),
-                /* key size */ sizeof (msg->header.time_stamp_in_nsec_from_1970));
-
-  else if ((p = mhash_get (&gu->message_index_by_time_stamp, &ts)))
-    return;
-
-  message_index = vec_len (gu->messages);
-  vec_add1 (gu->messages, msg[0]);
-  mhash_set (&gu->message_index_by_time_stamp, &ts, message_index, /* old_value */ 0);
-
-}
-
-static clib_error_t *
-rx_message (asn_main_t * am,
-            asn_user_t * src_au,
-            asn_user_t * dst_au,
-            asn_app_message_union_t * msg)
-{
-  clib_error_t * error = 0;
-  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
-  asn_user_type_t * ut = pool_elt (asn_user_type_pool, dst_au->user_type_index);
-  asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
-  asn_app_user_type_enum_t te = app_ut - app_main->user_types;
-  asn_user_t * did_add_au = dst_au;
-    
-  msg->header.from_user_index = src_au->index;
-
-  switch (te)
-    {
-    case ASN_APP_USER_TYPE_user: {
-      asn_app_user_t * u;
-      u32 src_is_self_user = asn_is_user_for_ref (src_au, &am->self_user_ref);
-      msg->header.from_user_index = src_is_self_user ? am->self_user_ref.user_index : src_au->index;
-      did_add_au = src_is_self_user ? dst_au : src_au;
-      u = CONTAINER_OF (did_add_au, asn_app_user_t, gen_user.asn_user);
-      asn_app_gen_user_add_message (&u->gen_user, msg);
-      break;
-    }
-
-    case ASN_APP_USER_TYPE_user_group: {
-      asn_app_user_group_t * g = CONTAINER_OF (did_add_au, asn_app_user_group_t, gen_user.asn_user);
-      asn_app_gen_user_add_message (&g->gen_user, msg);
-      break;
-    }
-
-    case ASN_APP_USER_TYPE_event: {
-      asn_app_event_t * e = CONTAINER_OF (did_add_au, asn_app_event_t, gen_user.asn_user);
-      asn_app_gen_user_add_message (&e->gen_user, msg);
-      break;
-    }
-
-    default:
-      ASSERT (0);
-      error = clib_error_return (0, "unknown user type %d", te);
-      goto done;
-    }
-
-  if (app_ut->did_add_message)
-    app_ut->did_add_message (did_add_au);
-
- done:
-  return error;
-}
-
 static clib_error_t *
 asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
                           asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
@@ -1627,10 +1594,14 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
   clib_error_t * error = 0;
   asn_user_t * dst_au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
   asn_user_t * src_au = asn_user_with_encrypt_key (am, ASN_TX, blob->author);
+  asn_app_gen_user_t * src_gen_user = 0;
+  asn_app_user_messages_t * user_msgs;
+  asn_app_message_header_t * msg_header;
+  asn_app_message_type_t * mt = 0;
   serialize_main_t m;
-  asn_app_message_union_t msg;
-
-  memset (&msg, 0, sizeof (msg));
+  void * msg = 0;
+  char * type_name = 0;
+  uword was_duplicate = 0;
 
   if (! dst_au || ! src_au)
     {
@@ -1639,101 +1610,144 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
     }
 
   serialize_open_data (&m, asn_pdu_contents_for_blob (blob), asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
-  error = unserialize (&m, unserialize_asn_app_message, &msg, /* is_save_restore */ 0);
+
+  unserialize_cstring (&m, &type_name);
+  mt = asn_app_message_type_by_name (type_name);
+  if (! mt)
+    {
+      error = clib_error_return (0, "unknown message type with name `%s'", type_name);
+      goto done;
+    }
+
+  src_gen_user = CONTAINER_OF (src_au, asn_app_gen_user_t, asn_user);
+  user_msgs = &src_gen_user->user_messages;
+
+  msg = asn_app_new_message_with_type (user_msgs, mt);
+
+  if (mt->unserialize)
+    error = unserialize (&m, mt->unserialize, msg);
   serialize_close (&m);
   if (error)
     goto done;
 
-  msg.header.from_user_index = ~0;
-  msg.header.time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
+  msg_header = msg + mt->user_msg_offset_of_message_header;
+  msg_header->from_user_index = src_au->index;
+  msg_header->time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
 
-  rx_message (am, src_au, dst_au, &msg);
+  was_duplicate = asn_app_add_user_message (user_msgs, msg_header, /* maybe_duplicate */ 1);
+
+  if (! was_duplicate)
+    {
+      asn_user_type_t * ut = pool_elt (asn_user_type_pool, src_au->user_type_index);
+      asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+
+      if (app_ut->did_receive_message)
+        app_ut->did_receive_message (src_au, msg_header);
+    }
 
  done:
-  if (error)
-    asn_app_message_union_free (&msg);
+  if ((error && msg) || was_duplicate)
+    asn_app_free_message_with_type (&src_gen_user->user_messages, mt, msg);
+  vec_free (type_name);
   return error;
 }
 
 typedef struct {
   asn_exec_ack_handler_t ack_handler;
-  asn_app_message_union_t msg_sent;
+  asn_app_message_ref_t msg_ref;
   asn_user_ref_t to_user_ref;
-} asn_app_send_message_blob_ack_handler_t;
+} asn_app_self_sent_message_blob_ack_handler_t;
 
 static clib_error_t *
 asn_app_send_message_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   asn_main_t * am = asn_ah->asn_main;
-  asn_app_send_message_blob_ack_handler_t * ah = CONTAINER_OF (asn_ah, asn_app_send_message_blob_ack_handler_t, ack_handler);
-  asn_user_t * src_au, * dst_au;
+  asn_app_self_sent_message_blob_ack_handler_t * ah = CONTAINER_OF (asn_ah, asn_app_self_sent_message_blob_ack_handler_t,
+                                                                    ack_handler);
+  clib_error_t * error = 0;
+  asn_user_t * au = asn_user_by_ref (&ah->to_user_ref);
+  asn_app_gen_user_t * gu = CONTAINER_OF (au, asn_app_gen_user_t, asn_user);
+  asn_app_message_header_t * h = asn_app_message_header_for_ref (&gu->user_messages, &ah->msg_ref);
 
-  src_au = asn_user_by_ref (&am->self_user_ref);
-  dst_au = asn_user_by_ref (&ah->to_user_ref);
+  h->time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
 
-  ah->msg_sent.header.time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
+  asn_app_add_user_message (&gu->user_messages, h, /* maybe_duplicate */ 0);
 
   if (am->verbose)
     clib_warning ("sent from self to user: type %U, key %U",
-		  format_asn_user_type, dst_au->index,
-		  format_hex_bytes, dst_au->crypto_keys.public.encrypt_key, 8);
+		  format_asn_user_type, au->index,
+		  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8);
 
-  return rx_message (am, src_au, dst_au, &ah->msg_sent);
+  {
+    asn_user_type_t * ut = pool_elt (asn_user_type_pool, au->user_type_index);
+    asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+
+    if (app_ut->did_receive_message)
+      app_ut->did_receive_message (au, h);
+  }
+
+  return error;
 }
 
-clib_error_t *
+static asn_user_t *
+asn_app_user_by_type_and_index (asn_app_main_t * app_main,
+                                asn_app_user_type_enum_t user_type,
+                                u32 user_index)
+{
+  asn_app_user_type_t * app_ut;
+  asn_user_ref_t user_ref;
+
+  ASSERT (user_type < ARRAY_LEN (app_main->user_types));
+  app_ut = app_main->user_types + user_type;
+
+  user_ref.user_index = user_index;
+  user_ref.type_index = app_ut->user_type.index;
+
+  return asn_user_by_ref (&user_ref);
+}
+
+static clib_error_t *
 asn_app_send_message_to_user (asn_app_main_t * app_main,
-                              asn_app_user_type_enum_t to_user_type,
-                              u32 to_user_index,
-                              asn_app_message_union_t * msg)
+                              asn_user_t * to_asn_user,
+                              asn_app_message_header_t * msg_header)
 {
   clib_error_t * error = 0;
   asn_main_t * am = &app_main->asn_main;
-  asn_app_user_type_t * app_ut;
-  asn_user_type_t * ut;
-  asn_user_t * to_asn_user;
+  asn_app_message_type_t * mt;
   u8 * content = 0;
-  asn_user_ref_t to_user_ref;
 
-  ASSERT (to_user_type < ARRAY_LEN (app_main->user_types));
-  app_ut = app_main->user_types + to_user_type;
-  ut = &app_ut->user_type;
-
-  to_user_ref.user_index = to_user_index;
-  to_user_ref.type_index = ut->index;
-
-  to_asn_user = asn_user_by_ref (&to_user_ref);
-  if (! to_asn_user)
-    {
-      error = clib_error_return (0, "unknown user with type %U and index %d",
-                                 format_asn_app_user_type_enum, to_user_type,
-                                 to_user_index);
-      goto done;
-    }
-
-  ASSERT (msg->header.type < ASN_APP_N_MESSAGE_TYPE);
-  msg->header.from_user_index = am->self_user_ref.user_index;
-  msg->header.time_stamp_in_nsec_from_1970 = 0; /* will be filled in by ack handler */
+  msg_header->from_user_index = am->self_user_ref.user_index;
+  msg_header->time_stamp_in_nsec_from_1970 = 0; /* will be filled in by ack handler */
 
   {
     serialize_main_t sm;
+    void * msg;
+    
     serialize_open_vector (&sm, 0);
-    error = serialize (&sm, serialize_asn_app_message, msg, /* is_save_restore */ 0);
+
+    mt = pool_elt (asn_app_message_type_pool, msg_header->ref.type_index);
+    msg = (void *) msg_header - mt->user_msg_offset_of_message_header;
+
+    serialize_cstring (&sm, mt->name);
+
+    if (mt->serialize)
+      error = serialize (&sm, mt->serialize, msg);
     if (error)
       goto done;
     content = serialize_close_vector (&sm);
   }
 
   {
-    asn_app_send_message_blob_ack_handler_t * ah;
+    asn_app_self_sent_message_blob_ack_handler_t * ah;
 
     ah = asn_exec_ack_handler_create_with_function_in_container
       (asn_app_send_message_blob_ack_handler,
        sizeof (ah[0]),
-       STRUCT_OFFSET_OF (asn_app_send_message_blob_ack_handler_t, ack_handler));
+       STRUCT_OFFSET_OF (asn_app_self_sent_message_blob_ack_handler_t, ack_handler));
 
-    ah->to_user_ref = to_user_ref;
-    ah->msg_sent = msg[0];
+    ah->to_user_ref.type_index = to_asn_user->user_type_index;
+    ah->to_user_ref.user_index = to_asn_user->index;
+    ah->msg_ref = msg_header->ref;
 
     error = asn_socket_exec_with_ack_handler
       (am, /* all client sockets */ 0,
@@ -1749,27 +1763,92 @@ asn_app_send_message_to_user (asn_app_main_t * app_main,
   return error;
 }
 
+static void serialize_asn_app_text_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
+  vec_serialize (m, msg->text, serialize_vec_8);
+}
+
+static void unserialize_asn_app_text_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_text_message_t * msg = va_arg (*va, asn_app_text_message_t *);
+  vec_unserialize (m, &msg->text, unserialize_vec_8);
+}
+
+static void free_asn_app_text_message (asn_app_message_header_t * h)
+{
+  asn_app_text_message_t * msg = CONTAINER_OF (h, asn_app_text_message_t, header);
+  vec_free (msg->text);
+}
+
+asn_app_message_type_t asn_app_text_message_type = {
+  .name = "text",
+  .user_msg_n_bytes = sizeof (asn_app_text_message_t),
+  .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_text_message_t, header),
+  .serialize = serialize_asn_app_text_message,
+  .unserialize = unserialize_asn_app_text_message,
+  .free = free_asn_app_text_message,
+};
+CLIB_INIT_ADD (asn_app_message_type_t, asn_app_text_message_type);
+
 clib_error_t *
 asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                                    asn_app_user_type_enum_t to_user_type,
                                    u32 to_user_index,
                                    char * fmt, ...)
 {
-  asn_app_message_union_t msg;
+  asn_user_t * to_asn_user;
+  asn_app_gen_user_t * gen_user;
+  asn_app_text_message_t * msg;
   va_list va;
 
-  memset (&msg, 0, sizeof (msg));
-  msg.header.type = ASN_APP_MESSAGE_TYPE_text;
+  to_asn_user = asn_app_user_by_type_and_index (app_main, to_user_type, to_user_index);
+  if (! to_asn_user)
+    return clib_error_return (0, "unknown user with type %U and index %d",
+                              format_asn_app_user_type_enum, to_user_type,
+                              to_user_index);
+
+  gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
+
+  msg = asn_app_new_message_with_type (&gen_user->user_messages, &asn_app_text_message_type);
 
   va_start (va, fmt);
-  msg.text.text = va_format (0, fmt, &va);
+  msg->text = va_format (0, fmt, &va);
   va_end (va);
 
-  return asn_app_send_message_to_user (app_main, to_user_type, to_user_index, &msg);
+  return asn_app_send_message_to_user (app_main, to_asn_user, &msg->header);
+}
+
+static void register_message_type (asn_app_message_type_t * mt)
+{
+  uword ti;
+
+  ASSERT (mt->name != 0);
+  ASSERT (mt->user_msg_n_bytes >= sizeof (asn_app_message_header_t));
+  ASSERT (mt->user_msg_offset_of_message_header >= 0);
+  ASSERT (mt->user_msg_offset_of_message_header + sizeof (asn_app_message_header_t) <= mt->user_msg_n_bytes);
+
+  asn_app_message_type_pool = pool_get_free_index (asn_app_message_type_pool, sizeof (asn_app_message_type_pool[0]),
+                                                   &ti);
+  asn_app_message_type_pool[ti] = mt;
+  mt->index = ti;
+  mt->was_registered = 1;
+
+  if (! asn_app_message_type_pool_index_by_name)
+    asn_app_message_type_pool_index_by_name = hash_create_string (0, sizeof (uword));
+
+  hash_set_mem (asn_app_message_type_pool_index_by_name, mt->name, ti);
+  ASSERT (mt == asn_app_message_type_by_name (mt->name));
 }
 
 void asn_app_main_init (asn_app_main_t * am)
 {
+  if (pool_elts (asn_app_message_type_pool) == 0)
+    {
+      asn_app_message_type_t * mt;
+      foreach_clib_init_with_type (mt, asn_app_message_type_t, register_message_type (mt));
+    }
+
   asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "%s", asn_app_user_blob_name);
 

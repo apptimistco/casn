@@ -1661,18 +1661,15 @@ void asn_main_free (asn_main_t * am)
 
 void asn_user_type_free (asn_user_type_t * t)
 {
-  void * u;
-  uword i;
-  u = t->user_pool;
-  vec_foreach_index (i, t->user_pool)
+  uword ui;
+  vec_foreach_index (ui, t->user_pool)
     {
-      if (! pool_is_free_index (t->user_pool, i))
+      if (! pool_is_free_index (t->user_pool, ui))
 	{
-	  asn_user_t * au = u + t->user_type_offset_of_asn_user;
+	  asn_user_t * au = t->user_pool + ui*t->user_type_n_bytes + t->user_type_offset_of_asn_user;
 	  t->free_user (au);
 	  asn_user_free (au);
 	}
-      u += t->user_type_n_bytes;
     }
   pool_free (t->user_pool);
 }

@@ -34,23 +34,14 @@ always_inline void asn_app_location_free (asn_app_location_t * l)
   vec_free (l->thumbnail_as_image_data);
 }
 
-#define foreach_asn_app_message_type		\
-  _ (text)					\
-  _ (photo)					\
-  _ (video)					\
-  _ (user_group_add_del_request)		\
-  _ (friend_request)
-
-typedef enum {
-#define _(f) ASN_APP_MESSAGE_TYPE_##f,
-  foreach_asn_app_message_type
-#undef _
-  ASN_APP_N_MESSAGE_TYPE,
-} asn_app_message_type_t;
+typedef struct {
+  u32 type_index;
+  u32 pool_index;
+} asn_app_message_ref_t;
 
 typedef struct {
+  asn_app_message_ref_t ref;
   u32 from_user_index;
-  asn_app_message_type_t type;
   u64 time_stamp_in_nsec_from_1970;
 } asn_app_message_header_t;
 
@@ -79,46 +70,94 @@ typedef struct {
   asn_app_message_header_t header;
 } asn_app_friend_request_message_t;
 
-always_inline void asn_app_friend_request_message_free (asn_app_friend_request_message_t * m)
-{ }
-
 typedef struct {
-  asn_app_message_header_t header;
-  asn_user_id_t group_id;
-  asn_user_id_t user_to_add;
-  /* Zero for add; non-zero for delete. */
-  u8 is_del;
-} asn_app_user_group_add_del_request_message_t;
+  char * name;
+  u32 index;
+  u32 was_registered;
 
-always_inline void asn_app_user_group_add_del_request_message_free (asn_app_user_group_add_del_request_message_t * m)
-{ }
+  u32 user_msg_n_bytes;
+  u32 user_msg_offset_of_message_header;
+  serialize_function_t * serialize, * unserialize;
 
-typedef union {
-  asn_app_message_header_t header;
-#define _(f) asn_app_##f##_message_t f;
-  foreach_asn_app_message_type
-#undef _
-} asn_app_message_union_t;
+  void (* free) (asn_app_message_header_t * h);
+} asn_app_message_type_t;
 
-always_inline void asn_app_message_union_free (asn_app_message_union_t * m)
+CLIB_INIT_ADD_TYPE (asn_app_message_type_t);
+
+asn_app_message_type_t ** asn_app_message_type_pool;
+uword * asn_app_message_type_pool_index_by_name;
+
+always_inline asn_app_message_type_t *
+asn_app_message_type_by_name (char * name)
 {
-  switch (m->header.type)
-    {
-#define _(f) case ASN_APP_MESSAGE_TYPE_##f: asn_app_##f##_message_free (&m->f); break;
-      foreach_asn_app_message_type;
-#undef _
-    default:
-      ASSERT (0);
-      break;
-    }
+  uword * p = hash_get_mem (asn_app_message_type_pool_index_by_name, name);
+  return p ? pool_elt (asn_app_message_type_pool, p[0]) : 0;
 }
 
-always_inline void asn_app_message_union_vector_free (asn_app_message_union_t ** mv)
+uword asn_app_register_message_type (asn_app_message_type_t * t);
+
+typedef struct {
+  void ** message_pool_by_type;
+  mhash_t message_ref_by_time_stamp;
+  asn_app_message_header_t most_recent_msg_header;
+} asn_app_user_messages_t;
+
+void asn_app_user_messages_free (asn_app_user_messages_t * m);
+
+always_inline uword
+asn_app_user_messages_is_empty (asn_app_user_messages_t * m)
+{ return m->most_recent_msg_header.time_stamp_in_nsec_from_1970 == 0; }
+
+always_inline void *
+asn_app_message_header_for_ref_helper (asn_app_user_messages_t * um, asn_app_message_ref_t * ref,
+                                       uword want_header)
 {
-  asn_app_message_union_t * m;
-  vec_foreach (m, *mv)
-    asn_app_message_union_free (m);
-  vec_free (*mv);
+  void * pool = vec_elt (um->message_pool_by_type, ref->type_index);
+  asn_app_message_type_t * mt = pool_elt (asn_app_message_type_pool, ref->type_index);
+  return (pool
+          + ref->pool_index * mt->user_msg_n_bytes
+          + (want_header ? mt->user_msg_offset_of_message_header : 0));
+}
+
+always_inline asn_app_message_header_t *
+asn_app_message_header_for_ref (asn_app_user_messages_t * um, asn_app_message_ref_t * ref)
+{ return asn_app_message_header_for_ref_helper (um, ref, /* want_header */ 1); }
+
+always_inline void *
+asn_app_message_for_ref (asn_app_user_messages_t * um, asn_app_message_ref_t * ref)
+{ return asn_app_message_header_for_ref_helper (um, ref, /* want_header */ 0); }
+
+always_inline void *
+asn_app_new_message_with_type (asn_app_user_messages_t * um, asn_app_message_type_t * mt)
+{
+  void * pool, * msg;
+  asn_app_message_header_t * h;
+  uword index;
+  ASSERT (mt->was_registered);
+  ASSERT (mt == pool_elt (asn_app_message_type_pool, mt->index));
+  vec_validate (um->message_pool_by_type, mt->index);
+  pool = vec_elt (um->message_pool_by_type, mt->index);
+  pool = pool_get_free_index (pool, mt->user_msg_n_bytes, &index);
+  um->message_pool_by_type[mt->index] = pool;
+  msg = pool + index * mt->user_msg_n_bytes;
+  memset (msg, 0, mt->user_msg_n_bytes);
+  h = msg + mt->user_msg_offset_of_message_header;
+  h->ref.pool_index = index;
+  h->ref.type_index = mt->index;
+  return msg;
+}
+
+always_inline void
+asn_app_free_message_with_type (asn_app_user_messages_t * um, asn_app_message_type_t * mt,
+                                void * msg)
+{
+  asn_app_message_header_t * h = msg - mt->user_msg_offset_of_message_header;
+  void * pool;
+  pool = vec_elt (um->message_pool_by_type, mt->index);
+  ASSERT (! pool_is_free_index (pool, h->ref.pool_index));
+  if (mt->free)
+    mt->free (h);
+  pool_put_index (pool, h->ref.pool_index);
 }
 
 #define foreach_asn_app_attribute_type		\
@@ -176,10 +215,7 @@ typedef struct {
   /* Photos of user, event, user group. */
   asn_app_photo_t * photos;
 
-  asn_app_message_union_t * messages;
-
-  /* Hash map of unique time stamp in nsec since 1970 to message index. */
-  mhash_t message_index_by_time_stamp;
+  asn_app_user_messages_t user_messages;
 } asn_app_gen_user_t;
 
 always_inline void asn_app_gen_user_set_position (asn_app_gen_user_t * u, asn_position_on_earth_t pos)
@@ -191,8 +227,6 @@ always_inline void asn_app_gen_user_set_position (asn_app_gen_user_t * u, asn_po
 
 always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
 {
-  asn_user_free (&u->asn_user);
-
   {
     asn_app_photo_t * p;
     vec_foreach (p, u->photos)
@@ -200,8 +234,7 @@ always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
     vec_free (u->photos);
   }
 
-  asn_app_message_union_vector_free (&u->messages);
-  mhash_free (&u->message_index_by_time_stamp);
+  asn_app_user_messages_free (&u->user_messages);
 }
 
 typedef struct {
@@ -287,7 +320,7 @@ typedef struct {
 
   void (* did_update_user) (asn_user_t * au, u32 is_new_user);
 
-  void (* did_add_message) (asn_user_t * to_user);
+  void (* did_receive_message) (asn_user_t * au, asn_app_message_header_t * msg);
 } asn_app_user_type_t;
 
 #define foreach_asn_app_user_type		\
@@ -355,6 +388,7 @@ void asn_app_set_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui, ...);
 
 void asn_app_invalidate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i);
 void asn_app_invalidate_all_attributes (asn_app_attribute_main_t * am, u32 i);
+
 always_inline void asn_app_validate_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 {
   asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
@@ -366,18 +400,15 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
 clib_error_t *
-asn_app_send_message_to_user (asn_app_main_t * am,
-                              asn_app_user_type_enum_t to_user_type, u32 to_user_index,
-                              asn_app_message_union_t * msg);
-clib_error_t *
 asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                                    asn_app_user_type_enum_t to_user_type,
                                    u32 to_user_index,
                                    char * fmt, ...);
-int asn_app_sort_message_by_increasing_time (asn_app_message_union_t * m0, asn_app_message_union_t * m1);
 
 clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
 
 serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
+
+asn_app_message_type_t asn_app_text_message_type;
 
 #endif /* included_asn_app_h */
