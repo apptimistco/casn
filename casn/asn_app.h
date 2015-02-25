@@ -401,7 +401,7 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                                    u32 to_user_index,
                                    char * fmt, ...);
 
-#define foreach_asn_app_invitation_type    \
+#define foreach_asn_app_invitation_type         \
   _ (invalid)                                   \
   _ (invitation_offer)                          \
   _ (accept_invitation)                         \
