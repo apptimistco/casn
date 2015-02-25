@@ -1668,14 +1668,16 @@ asn_app_send_message_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_
   asn_user_t * au = asn_user_by_ref (&ah->to_user_ref);
   asn_app_gen_user_t * gu = CONTAINER_OF (au, asn_app_gen_user_t, asn_user);
   asn_app_message_header_t * h = asn_app_message_header_for_ref (&gu->user_messages, &ah->msg_ref);
+  asn_app_message_type_t * mt = pool_elt (asn_app_message_type_pool, h->ref.type_index);
 
   h->time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
 
   asn_app_add_user_message (&gu->user_messages, h, /* maybe_duplicate */ 0);
 
   if (am->verbose)
-    clib_warning ("sent from self to user: type %U, key %U",
-		  format_asn_user_type, au->index,
+    clib_warning ("sent %s message from self to user: type %U, key %U",
+                  mt->name,
+		  format_asn_user_type, au->user_type_index,
 		  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8);
 
   {
@@ -1815,6 +1817,63 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
   va_start (va, fmt);
   msg->text = va_format (0, fmt, &va);
   va_end (va);
+
+  return asn_app_send_message_to_user (app_main, to_asn_user, &msg->header);
+}
+
+static void serialize_asn_app_invitation_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_invitation_message_t * msg = va_arg (*va, asn_app_invitation_message_t *);
+  serialize_likely_small_unsigned_integer (m, msg->type);
+  serialize_data (m, msg->invitation_for_key, sizeof (msg->invitation_for_key));
+}
+
+static void unserialize_asn_app_invitation_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_invitation_message_t * msg = va_arg (*va, asn_app_invitation_message_t *);
+  msg->type = unserialize_likely_small_unsigned_integer (m);
+  unserialize_data (m, msg->invitation_for_key, sizeof (msg->invitation_for_key));
+}
+
+asn_app_message_type_t asn_app_invitation_message_type = {
+  .name = "invitation",
+  .user_msg_n_bytes = sizeof (asn_app_invitation_message_t),
+  .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_invitation_message_t, header),
+  .serialize = serialize_asn_app_invitation_message,
+  .unserialize = unserialize_asn_app_invitation_message,
+};
+CLIB_INIT_ADD (asn_app_message_type_t, asn_app_invitation_message_type);
+
+clib_error_t *
+asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
+                                         asn_app_user_type_enum_t invitation_user_type,
+                                         u32 invitation_user_index,
+                                         asn_app_user_type_enum_t to_user_type,
+                                         u32 to_user_index,
+                                         asn_app_invitation_type_t invitation_type)
+{
+  asn_user_t * to_asn_user, * invitation_asn_user;
+  asn_app_gen_user_t * gen_user;
+  asn_app_invitation_message_t * msg;
+
+  to_asn_user = asn_app_user_by_type_and_index (app_main, to_user_type, to_user_index);
+  if (! to_asn_user)
+    return clib_error_return (0, "unknown user with type %U and index %d",
+                              format_asn_app_user_type_enum, to_user_type,
+                              to_user_index);
+
+  invitation_asn_user = asn_app_user_by_type_and_index (app_main, invitation_user_type, invitation_user_index);
+  if (! invitation_asn_user)
+    return clib_error_return (0, "unknown user with type %U and index %d",
+                              format_asn_app_user_type_enum, invitation_user_type,
+                              invitation_user_index);
+
+  gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
+
+  msg = asn_app_new_message_with_type (&gen_user->user_messages, &asn_app_invitation_message_type);
+
+  msg->type = invitation_type;
+  memcpy (msg->invitation_for_key, invitation_asn_user->crypto_keys.public.encrypt_key, sizeof (msg->invitation_for_key));
 
   return asn_app_send_message_to_user (app_main, to_asn_user, &msg->header);
 }

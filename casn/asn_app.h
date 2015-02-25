@@ -46,31 +46,6 @@ typedef struct {
 } asn_app_message_header_t;
 
 typedef struct {
-  asn_app_message_header_t header;
-  u8 * text;
-} asn_app_text_message_t;
-
-always_inline void asn_app_text_message_free (asn_app_text_message_t * m)
-{ vec_free (m->text); }
-
-typedef struct {
-  asn_app_message_header_t header;
-  asn_app_photo_t photo;
-} asn_app_photo_message_t;
-
-always_inline void asn_app_photo_message_free (asn_app_photo_message_t * p)
-{ asn_app_photo_free (&p->photo); }
-
-typedef asn_app_photo_message_t asn_app_video_message_t;
-
-always_inline void asn_app_video_message_free (asn_app_video_message_t * p)
-{ asn_app_photo_free (&p->photo); }
-
-typedef struct {
-  asn_app_message_header_t header;
-} asn_app_friend_request_message_t;
-
-typedef struct {
   char * name;
   u32 index;
   u32 was_registered;
@@ -83,6 +58,13 @@ typedef struct {
 } asn_app_message_type_t;
 
 CLIB_INIT_ADD_TYPE (asn_app_message_type_t);
+
+always_inline uword
+asn_app_message_has_type (asn_app_message_header_t * h, asn_app_message_type_t * t)
+{
+  ASSERT (t->was_registered);
+  return h->ref.type_index == t->index;
+}
 
 asn_app_message_type_t ** asn_app_message_type_pool;
 uword * asn_app_message_type_pool_index_by_name;
@@ -399,16 +381,53 @@ void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui,
 u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui);
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
+clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
+
+serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
+
+typedef struct {
+  asn_app_message_header_t header;
+  u8 * text;
+} asn_app_text_message_t;
+
+always_inline void asn_app_text_message_free (asn_app_text_message_t * m)
+{ vec_free (m->text); }
+
+asn_app_message_type_t asn_app_text_message_type;
+
 clib_error_t *
 asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                                    asn_app_user_type_enum_t to_user_type,
                                    u32 to_user_index,
                                    char * fmt, ...);
 
-clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
+#define foreach_asn_app_invitation_type    \
+  _ (invalid)                                   \
+  _ (invitation_offer)                          \
+  _ (accept_invitation)                         \
+  _ (decline_invitation)
 
-serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
+typedef enum {
+#define _(f) ASN_APP_INVITATION_TYPE_##f,
+  foreach_asn_app_invitation_type
+#undef _
+} asn_app_invitation_type_t;
 
-asn_app_message_type_t asn_app_text_message_type;
+typedef struct {
+  asn_app_message_header_t header;
+  asn_app_invitation_type_t type;
+  /* Key for user, group or event that invitation is for. */
+  u8 invitation_for_key[crypto_box_public_key_bytes];
+} asn_app_invitation_message_t;
+
+asn_app_message_type_t asn_app_invitation_message_type;
+
+clib_error_t *
+asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
+                                         asn_app_user_type_enum_t invitation_user_type,
+                                         u32 invitation_user_index,
+                                         asn_app_user_type_enum_t to_user_type,
+                                         u32 to_user_index,
+                                         asn_app_invitation_type_t invitation_type);
 
 #endif /* included_asn_app_h */
