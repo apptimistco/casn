@@ -1510,6 +1510,183 @@ asn_app_user_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * 
 }
 
 typedef struct {
+  asn_user_key_t key;
+  asn_user_t * user;
+} asn_user_and_key_t;
+
+typedef struct {
+  u32 n_unknown_users;
+  /* User 0 is owner; users > 0 are subscribers. */
+  asn_user_and_key_t * users;
+} asn_app_users_lookup_t;
+
+always_inline void
+asn_app_users_lookup_free (asn_app_users_lookup_t * l)
+{ vec_free (l->users); }
+
+static void lookup_users (asn_main_t * am, asn_app_users_lookup_t * lu)
+{
+  uword i;
+  lu->n_unknown_users = 0;
+  vec_foreach_index (i, lu->users)
+    {
+      lu->users[i].user = asn_user_with_encrypt_key (am, ASN_TX, lu->users[i].key.data);
+      lu->n_unknown_users += ! lu->users[i].user;
+    }
+}
+
+static void handle_subscribers (asn_main_t * am, asn_app_users_lookup_t * lu)
+{
+  asn_user_t * owner = lu->users[0].user;
+  asn_app_user_type_t * app_ut = asn_app_user_type_for_user (owner);
+  asn_user_ref_t * urs = 0;
+  uword i;
+
+  ASSERT (lu->n_unknown_users == 0);
+  ASSERT (app_ut->update_subscribers);
+
+  for (i = 1; i < vec_len (lu->users); i++)
+    {
+      asn_user_ref_t r;
+      r.user_index = lu->users[i].user->index;
+      r.type_index = lu->users[i].user->user_type_index;
+      vec_add1 (urs, r);
+    }
+
+  app_ut->update_subscribers (am, owner, urs, vec_len (urs));
+
+  if (app_ut->did_update_user)
+    app_ut->did_update_user (owner, /* is_new_user */ 0);
+}
+
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_app_users_lookup_t * users_lookup;
+  u32 user_index;
+} learn_users_exec_ack_handler_t;
+
+static void
+learn_users_exec_ack_handler_free (asn_exec_ack_handler_t * ah, u32 force_free)
+{
+  learn_users_exec_ack_handler_t * lah;
+  asn_app_users_lookup_t * lu;
+
+  if (! force_free)
+    return;
+
+  lah = CONTAINER_OF (ah, learn_users_exec_ack_handler_t, ack_handler);
+  lu = lah->users_lookup;
+
+  ASSERT (lu->n_unknown_users > 0);
+  lu->n_unknown_users--;
+  if (lu->n_unknown_users == 0)
+    {
+      asn_app_users_lookup_free (lu);
+      clib_mem_free (lu);
+    }
+}
+
+static clib_error_t *
+learn_user_for_subscribers_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  clib_error_t * error = 0;
+  asn_user_t * au;
+  asn_user_type_t * ut;
+  asn_user_ref_t user_ref;
+  learn_users_exec_ack_handler_t * lah
+    = CONTAINER_OF (ah, learn_users_exec_ack_handler_t, ack_handler);
+  asn_app_users_lookup_t * lu = lah->users_lookup;
+  asn_user_and_key_t * uk = vec_elt_at_index (lu->users, lah->user_index);
+
+  error = asn_learn_user_from_ack (ah->asn_main, ack, n_bytes_ack_data, uk->key.data,
+                                   &user_ref);
+  if (error)
+    goto done;
+
+  au = asn_user_by_ref (&user_ref);
+  ut = pool_elt (asn_user_type_pool, user_ref.type_index);
+
+  if (ut->did_learn_new_user)
+    ut->did_learn_new_user (au, /* is_place */ 0);
+
+  ASSERT (lu->n_unknown_users > 0);
+  lu->n_unknown_users -= 1;
+
+  if (lu->n_unknown_users == 0)
+    {
+      /* lu will be freed by learn_user_for_subscribers_exec_ack_handler_free */
+      lookup_users (ah->asn_main, lu);
+      handle_subscribers (ah->asn_main, lu);
+    }
+
+ done:
+  return error;
+}
+
+static clib_error_t *
+asn_app_subscribers_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  clib_error_t * error = 0;
+  asn_user_key_t * subscribers = asn_pdu_contents_for_blob (blob);
+  u32 i, n_subscribers;
+  asn_app_users_lookup_t lookup;
+
+  memset (&lookup, 0, sizeof (lookup));
+
+  n_subscribers = asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu);
+  if (n_subscribers % sizeof (subscribers[0]))
+    {
+      error = clib_error_return (0, "blob content length %d not a multiple of %d",
+                                 n_subscribers, sizeof (subscribers[0]));
+      goto done;
+    }
+  n_subscribers /= sizeof (subscribers[0]);
+
+  vec_resize (lookup.users, 1 + n_subscribers);
+  memcpy (lookup.users[0].key.data, blob->owner, sizeof (lookup.users[0].key.data));
+  for (i = 0; i < n_subscribers; i++)
+    lookup.users[1 + i].key = subscribers[i];
+
+  lookup_users (am, &lookup);
+  if (lookup.n_unknown_users == 0)
+    {
+      handle_subscribers (am, &lookup);
+      asn_app_users_lookup_free (&lookup);
+    }
+  else
+    {
+      asn_app_users_lookup_t * lu;
+
+      lu = clib_mem_alloc_no_fail (sizeof (lookup));
+      lu[0] = lookup;
+      memset (&lookup, 0, sizeof (lookup)); /* poison it to avoid re-use */
+
+      for (i = 0; i < vec_len (lookup.users); i++)
+        if (! lu->users[i].user)
+          {
+            learn_users_exec_ack_handler_t * ah
+              = asn_exec_ack_handler_create_with_function_in_container
+              (learn_user_for_subscribers_exec_ack_handler,
+               sizeof (learn_users_exec_ack_handler_t),
+               STRUCT_OFFSET_OF (learn_users_exec_ack_handler_t, ack_handler));
+
+            ah->ack_handler.free = learn_users_exec_ack_handler_free;
+            ah->users_lookup = lu;
+            ah->user_index = i;
+
+            error = asn_socket_exec_with_ack_handler
+              (am, as,
+               &ah->ack_handler, "%U", format_asn_learn_user_exec_command, lu->users[i].key.data, sizeof (lu->users[i].key.data));
+            if (error)
+              goto done;        /* better not happen! */
+          }
+    }
+
+ done:
+  return error;
+}
+
+typedef struct {
   asn_exec_ack_handler_t ack_handler;
   asn_app_user_type_enum_t create_user_type;
   u32 create_user_index;
@@ -1584,17 +1761,16 @@ asn_app_create_user_and_blob_with_type (asn_app_main_t * am, asn_app_user_type_e
   app_ut = am->user_types + ah->create_user_type;
   ut = &app_ut->user_type;
 
-  return asn_socket_exec_with_ack_handler (&am->asn_main, 0, &ah->ack_handler, "newuser%c-b%c%08x", 0, 0, ut->index);
+  return asn_socket_exec_with_ack_handler (&am->asn_main, 0, &ah->ack_handler, "newuser%c-b%c%s", 0, 0, ut->name);
 }
 
 static clib_error_t *
-asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
-                          asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+asn_app_user_message_handler (asn_main_t * am, asn_socket_t * as,
+                              asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
   clib_error_t * error = 0;
-  asn_user_t * dst_au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
-  asn_user_t * src_au = asn_user_with_encrypt_key (am, ASN_TX, blob->author);
-  asn_app_gen_user_t * src_gen_user = 0;
+  asn_user_t * save_au, * from_au;
+  asn_app_gen_user_t * save_gen_user = 0;
   asn_app_user_messages_t * user_msgs;
   asn_app_message_header_t * msg_header;
   asn_app_message_type_t * mt = 0;
@@ -1603,13 +1779,21 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
   char * type_name = 0;
   uword was_duplicate = 0;
 
-  if (! dst_au || ! src_au)
-    {
-      error = clib_error_return (0, "owner/author user not found");
-      goto done;
-    }
+  {
+    asn_user_t * owner_au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+    asn_user_t * author_au = asn_user_with_encrypt_key (am, ASN_TX, blob->author);
+    if (asn_is_user_for_ref (owner_au, &am->self_user_ref))
+      save_au = from_au = author_au;
+    else
+      {
+        save_au = owner_au;
+        from_au = author_au;
+      }
+  }
 
-  serialize_open_data (&m, asn_pdu_contents_for_blob (blob), asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
+  serialize_open_data (&m,
+                       asn_pdu_contents_for_blob (blob),
+                       asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
 
   unserialize_cstring (&m, &type_name);
   mt = asn_app_message_type_by_name (type_name);
@@ -1619,8 +1803,8 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
       goto done;
     }
 
-  src_gen_user = CONTAINER_OF (src_au, asn_app_gen_user_t, asn_user);
-  user_msgs = &src_gen_user->user_messages;
+  save_gen_user = CONTAINER_OF (save_au, asn_app_gen_user_t, asn_user);
+  user_msgs = &save_gen_user->user_messages;
 
   msg = asn_app_new_message_with_type (user_msgs, mt);
 
@@ -1631,24 +1815,148 @@ asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
     goto done;
 
   msg_header = msg + mt->user_msg_offset_of_message_header;
-  msg_header->from_user_index = src_au->index;
+  msg_header->from_user_index = from_au->index;
   msg_header->time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
 
   was_duplicate = asn_app_add_user_message (user_msgs, msg_header, /* maybe_duplicate */ 1);
 
   if (! was_duplicate)
     {
-      asn_user_type_t * ut = pool_elt (asn_user_type_pool, src_au->user_type_index);
+      asn_user_type_t * ut = pool_elt (asn_user_type_pool, save_au->user_type_index);
       asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+      uword learning_new_user_from_message = 0;
 
-      if (app_ut->did_receive_message)
-        app_ut->did_receive_message (src_au, msg_header);
+      if (mt->maybe_learn_new_user_from_message)
+        {
+          error = mt->maybe_learn_new_user_from_message (am, as, save_au, msg_header, &learning_new_user_from_message);
+          if (error)
+            goto done;
+        }
+
+      if (app_ut->did_receive_message && ! learning_new_user_from_message)
+        app_ut->did_receive_message (save_au, msg_header);
     }
 
  done:
   if ((error && msg) || was_duplicate)
-    asn_app_free_message_with_type (&src_gen_user->user_messages, mt, msg);
+    asn_app_free_message_with_type (&save_gen_user->user_messages, mt, msg);
   vec_free (type_name);
+  return error;
+}
+
+typedef struct {
+  learn_users_exec_ack_handler_t learn_users_exec_ack_handler;
+  asn_pdu_blob_t * blob_pdu;
+  u32 n_bytes_in_blob_pdu;
+} learn_users_for_received_message_exec_ack_handler_t;
+
+static void
+learn_users_for_received_message_exec_ack_handler_free (asn_exec_ack_handler_t * ah, u32 force_free)
+{
+  learn_users_for_received_message_exec_ack_handler_t * lah
+    = CONTAINER_OF (ah, learn_users_for_received_message_exec_ack_handler_t, learn_users_exec_ack_handler.ack_handler);
+  asn_app_users_lookup_t * lu = lah->learn_users_exec_ack_handler.users_lookup;
+  if (force_free || lu->n_unknown_users == 0)
+    clib_mem_free (lah->blob_pdu);
+  learn_users_exec_ack_handler_free (&lah->learn_users_exec_ack_handler.ack_handler, force_free);
+}
+
+static clib_error_t *
+learn_user_for_received_message_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  clib_error_t * error = 0;
+  asn_user_t * au;
+  asn_user_type_t * ut;
+  asn_user_ref_t user_ref;
+  learn_users_for_received_message_exec_ack_handler_t * lah
+    = CONTAINER_OF (ah, learn_users_for_received_message_exec_ack_handler_t, learn_users_exec_ack_handler.ack_handler);
+  asn_app_users_lookup_t * lu = lah->learn_users_exec_ack_handler.users_lookup;
+  asn_user_and_key_t * uk = vec_elt_at_index (lu->users, lah->learn_users_exec_ack_handler.user_index);
+
+  error = asn_learn_user_from_ack (ah->asn_main, ack, n_bytes_ack_data, uk->key.data,
+                                   &user_ref);
+  if (error)
+    goto done;
+
+  au = asn_user_by_ref (&user_ref);
+  ut = pool_elt (asn_user_type_pool, user_ref.type_index);
+
+  if (ut->did_learn_new_user)
+    ut->did_learn_new_user (au, /* is_place */ 0);
+
+  ASSERT (lu->n_unknown_users > 0);
+  lu->n_unknown_users -= 1;
+
+  if (lu->n_unknown_users == 0)
+    {
+      lookup_users (ah->asn_main, lu);
+
+      ASSERT (lu->n_unknown_users == 0);
+
+      error = asn_app_user_message_handler (ah->asn_main, ah->asn_socket, lah->blob_pdu, lah->n_bytes_in_blob_pdu);
+    }
+
+ done:
+  return error;
+}
+
+static clib_error_t *
+asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
+                          asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+{
+  clib_error_t * error = 0;
+  asn_app_users_lookup_t lookup;
+
+  memset (&lookup, 0, sizeof (lookup));
+  vec_resize (lookup.users, 2);
+  memcpy (lookup.users[0].key.data, blob->author, sizeof (lookup.users[0].key.data));
+  memcpy (lookup.users[1].key.data, blob->owner, sizeof (lookup.users[1].key.data));
+
+  lookup_users (am, &lookup);
+
+  if (lookup.n_unknown_users > 0)
+    {
+      asn_pdu_blob_t * blob_pdu;
+      asn_app_users_lookup_t * lu;
+      uword i;
+
+      lu = clib_mem_alloc_no_fail (sizeof (lookup));
+      lu[0] = lookup;
+
+      blob_pdu = clib_mem_alloc_no_fail (n_bytes_in_pdu);
+      memcpy (blob_pdu, blob, n_bytes_in_pdu);
+
+      vec_foreach_index (i, lu->users)
+        {
+          learn_users_for_received_message_exec_ack_handler_t * ah;
+          learn_users_exec_ack_handler_t * lah;
+
+          if (lu->users[i].user)
+            continue;
+
+          ah = asn_exec_ack_handler_create_with_function_in_container
+            (learn_user_for_received_message_exec_ack_handler,
+             sizeof (learn_users_for_received_message_exec_ack_handler_t),
+             STRUCT_OFFSET_OF (learn_users_for_received_message_exec_ack_handler_t, learn_users_exec_ack_handler.ack_handler));
+          lah = &ah->learn_users_exec_ack_handler;
+
+          lah->users_lookup = lu;
+          lah->user_index = i;
+          lah->ack_handler.free = learn_users_for_received_message_exec_ack_handler_free;
+          ah->blob_pdu = blob_pdu;
+          ah->n_bytes_in_blob_pdu = n_bytes_in_pdu;
+
+          error = asn_socket_exec_with_ack_handler
+            (am, as,
+             &lah->ack_handler, "%U", format_asn_learn_user_exec_command, lu->users[i].key.data, sizeof (lu->users[i].key.data));
+        }
+    }
+  else
+    {
+      error = asn_app_user_message_handler (am, as, blob, n_bytes_in_pdu);
+      asn_app_users_lookup_free (&lookup);
+    }
+
   return error;
 }
 
@@ -1825,14 +2133,82 @@ static void serialize_asn_app_invitation_message (serialize_main_t * m, va_list 
 {
   asn_app_invitation_message_t * msg = va_arg (*va, asn_app_invitation_message_t *);
   serialize_likely_small_unsigned_integer (m, msg->type);
-  serialize_data (m, msg->invitation_for_key, sizeof (msg->invitation_for_key));
+  serialize_data (m, msg->invitation_for_key.data, sizeof (msg->invitation_for_key.data));
 }
 
 static void unserialize_asn_app_invitation_message (serialize_main_t * m, va_list * va)
 {
   asn_app_invitation_message_t * msg = va_arg (*va, asn_app_invitation_message_t *);
   msg->type = unserialize_likely_small_unsigned_integer (m);
-  unserialize_data (m, msg->invitation_for_key, sizeof (msg->invitation_for_key));
+  unserialize_data (m, msg->invitation_for_key.data, sizeof (msg->invitation_for_key.data));
+}
+
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_user_ref_t src_user_ref;
+  asn_app_message_ref_t invitation_msg_ref;
+} learn_user_for_invitation_exec_ack_handler_t;
+
+static clib_error_t *
+learn_user_for_invitation_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  clib_error_t * error = 0;
+  learn_user_for_invitation_exec_ack_handler_t * lah
+    = CONTAINER_OF (ah, learn_user_for_invitation_exec_ack_handler_t, ack_handler);
+  asn_user_t * src_au = asn_user_by_ref (&lah->src_user_ref);
+  asn_app_gen_user_t * gu = CONTAINER_OF (src_au, asn_app_gen_user_t, asn_user);
+  asn_app_invitation_message_t * msg = asn_app_message_for_ref (&gu->user_messages, &lah->invitation_msg_ref);
+  asn_user_ref_t learned_user_ref;
+
+  error = asn_learn_user_from_ack (ah->asn_main, ack, n_bytes_ack_data, msg->invitation_for_key.data,
+                                   &learned_user_ref);
+  if (error)
+    goto done;
+
+  {
+    asn_user_type_t * ut = pool_elt (asn_user_type_pool, learned_user_ref.type_index);
+    asn_user_t * learned_au = asn_user_by_ref (&learned_user_ref);
+    if (ut->did_learn_new_user)
+      ut->did_learn_new_user (learned_au, /* is_place */ 0);
+  }
+
+  {
+    asn_user_type_t * ut = pool_elt (asn_user_type_pool, src_au->user_type_index);
+    asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+    if (app_ut->did_receive_message)
+      app_ut->did_receive_message (src_au, &msg->header);
+  }
+
+ done:
+  return error;
+}
+
+static clib_error_t *
+asn_app_invitation_maybe_learn_new_user (asn_main_t * am, asn_socket_t * as, asn_user_t * src_au,
+                                         asn_app_message_header_t * h,
+                                         uword * learning_new_user_from_message)
+{
+  asn_app_invitation_message_t * msg = CONTAINER_OF (h, asn_app_invitation_message_t, header);
+  asn_user_t * invited_user = asn_user_with_encrypt_key (am, ASN_TX, msg->invitation_for_key.data);
+  clib_error_t * error = 0;
+  if (! invited_user)
+    {
+      learn_user_for_invitation_exec_ack_handler_t * ah
+        = asn_exec_ack_handler_create_with_function_in_container
+        (learn_user_for_invitation_exec_ack_handler,
+         sizeof (learn_user_for_invitation_exec_ack_handler_t),
+         STRUCT_OFFSET_OF (learn_user_for_invitation_exec_ack_handler_t, ack_handler));
+
+      ah->src_user_ref.user_index = src_au->index;
+      ah->src_user_ref.type_index = src_au->user_type_index;
+      ah->invitation_msg_ref = h->ref;
+
+      error = asn_socket_exec_with_ack_handler
+        (am, as,
+         &ah->ack_handler, "%U", format_asn_learn_user_exec_command, msg->invitation_for_key.data, sizeof (msg->invitation_for_key.data));
+    }
+  *learning_new_user_from_message = invited_user ? 0 : 1;
+  return error;
 }
 
 asn_app_message_type_t asn_app_invitation_message_type = {
@@ -1841,6 +2217,7 @@ asn_app_message_type_t asn_app_invitation_message_type = {
   .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_invitation_message_t, header),
   .serialize = serialize_asn_app_invitation_message,
   .unserialize = unserialize_asn_app_invitation_message,
+  .maybe_learn_new_user_from_message = asn_app_invitation_maybe_learn_new_user,
 };
 CLIB_INIT_ADD (asn_app_message_type_t, asn_app_invitation_message_type);
 
@@ -1873,9 +2250,35 @@ asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
   msg = asn_app_new_message_with_type (&gen_user->user_messages, &asn_app_invitation_message_type);
 
   msg->type = invitation_type;
-  memcpy (msg->invitation_for_key, invitation_asn_user->crypto_keys.public.encrypt_key, sizeof (msg->invitation_for_key));
+  memcpy (msg->invitation_for_key.data, invitation_asn_user->crypto_keys.public.encrypt_key, sizeof (msg->invitation_for_key.data));
 
   return asn_app_send_message_to_user (app_main, to_asn_user, &msg->header);
+}
+
+static void
+asn_app_user_group_update_subscribers (asn_main_t * am,
+                                       asn_user_t * owner_au, asn_user_ref_t * subscriber_user_refs, u32 n_subscriber_user_refs)
+{
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  asn_app_user_group_t * g = CONTAINER_OF (owner_au, asn_app_user_group_t, gen_user.asn_user);
+  uword i;
+
+  hash_free (g->group_users);
+  g->group_users = hash_create (sizeof (uword), /* value bytes */ 0);
+  for (i = 0; i < n_subscriber_user_refs; i++)
+    {
+      asn_user_t * subscriber_au = asn_user_by_ref (&subscriber_user_refs[i]);
+      asn_user_type_t * subscriber_ut = asn_user_type_for_user (subscriber_au);
+      if (subscriber_ut->index != app_main->user_types[ASN_APP_USER_TYPE_user].user_type.index)
+        {
+          if (am->verbose)
+            clib_warning ("subscriber with wrong user type %s ignored", subscriber_ut->name);
+        }
+      else
+        {
+          hash_set1 (g->group_users, subscriber_au->index);
+        }
+    }
 }
 
 static void register_message_type (asn_app_message_type_t * mt)
@@ -1910,9 +2313,7 @@ void asn_app_main_init (asn_app_main_t * am)
 
   asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "%s", asn_app_user_blob_name);
-
-  /* FIXME remove this when server never prepends with /. */
-  asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "/%s", asn_app_user_blob_name);
+  asn_set_blob_handler_for_name (&am->asn_main, asn_app_subscribers_blob_handler, "asn/subscribers");
 
   if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)
     {
@@ -1946,6 +2347,7 @@ void asn_app_main_init (asn_app_main_t * am)
         },
         .serialize_blob_contents = serialize_asn_app_profile_for_user_group,
         .unserialize_blob_contents = unserialize_asn_app_profile_for_user_group,
+        .update_subscribers = asn_app_user_group_update_subscribers,
       };
 
       am->user_types[ASN_APP_USER_TYPE_user_group] = t;

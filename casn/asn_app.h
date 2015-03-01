@@ -54,6 +54,10 @@ typedef struct {
   u32 user_msg_offset_of_message_header;
   serialize_function_t * serialize, * unserialize;
 
+  clib_error_t * (* maybe_learn_new_user_from_message) (asn_main_t * am, asn_socket_t * as, asn_user_t * au,
+                                                        asn_app_message_header_t * h,
+                                                        uword * learning_new_user_from_message);
+
   void (* free) (asn_app_message_header_t * h);
 } asn_app_message_type_t;
 
@@ -303,7 +307,17 @@ typedef struct {
   void (* did_update_user) (asn_user_t * au, u32 is_new_user);
 
   void (* did_receive_message) (asn_user_t * au, asn_app_message_header_t * msg);
+
+  void (* update_subscribers) (asn_main_t * am,
+                               asn_user_t * au, asn_user_ref_t * subcriber_user_refs, u32 n_subscriber_user_refs);
 } asn_app_user_type_t;
+
+always_inline asn_app_user_type_t *
+asn_app_user_type_for_user (asn_user_t * au)
+{
+  asn_user_type_t * ut = asn_user_type_for_user (au);
+  return CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+}
 
 #define foreach_asn_app_user_type		\
   _ (user) _ (user_group) _ (event) _ (place)
@@ -333,6 +347,14 @@ asn_app_user_group_with_index (asn_app_main_t * am, u32 index)
 {
   asn_app_user_group_t * us = am->user_types[ASN_APP_USER_TYPE_user_group].user_type.user_pool;
   return pool_elt_at_index (us, index);
+}
+
+always_inline clib_error_t *
+asn_app_user_group_save_users (asn_app_main_t * am, asn_app_user_group_t * g)
+{
+    return asn_save_users (&am->asn_main, /* socket */ 0, &g->gen_user.asn_user,
+                           "asn/subscribers", am->user_types[ASN_APP_USER_TYPE_user].user_type.index,
+                           g->group_users);
 }
 
 always_inline asn_app_event_t *
@@ -417,7 +439,7 @@ typedef struct {
   asn_app_message_header_t header;
   asn_app_invitation_type_t type;
   /* Key for user, group or event that invitation is for. */
-  u8 invitation_for_key[crypto_box_public_key_bytes];
+  asn_user_key_t invitation_for_key;
 } asn_app_invitation_message_t;
 
 asn_app_message_type_t asn_app_invitation_message_type;

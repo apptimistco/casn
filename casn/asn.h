@@ -18,8 +18,8 @@ typedef struct {
 } asn_crypto_public_keys_t;
 
 typedef struct {
-  u8 key[crypto_box_public_key_bytes];
-} asn_user_id_t;
+  u8 data[crypto_box_public_key_bytes];
+} asn_user_key_t;
 
 typedef struct {
   asn_crypto_private_keys_t private;
@@ -230,6 +230,14 @@ typedef struct {
 } asn_user_type_t;
 
 asn_user_type_t ** asn_user_type_pool;
+uword * asn_user_type_index_by_name;
+
+always_inline asn_user_type_t *
+asn_user_type_by_name (char * name)
+{
+  uword * p = hash_get_mem (asn_user_type_index_by_name, name);
+  return p ? pool_elt (asn_user_type_pool, p[0]) : 0;
+}
 
 always_inline uword
 asn_register_user_type (asn_user_type_t * t)
@@ -238,6 +246,15 @@ asn_register_user_type (asn_user_type_t * t)
   ASSERT (! t->was_registered);
   t->was_registered = 1;
   t->index = ti;
+  if (! asn_user_type_index_by_name)
+    asn_user_type_index_by_name = hash_create_string (0, sizeof (uword));
+
+  {
+    uword old_value = ~0;
+    hash_set3 (asn_user_type_index_by_name, pointer_to_uword (t->name), ti, &old_value);
+    ASSERT (old_value == ~0);
+  }
+
   return ti;
 }  
 
@@ -414,6 +431,14 @@ asn_user_alloc_with_type (asn_user_type_t * ut)
   return au;
 }
 
+always_inline uword
+asn_user_is_owned_by_self (asn_user_t * au)
+{ return au->private_key_is_valid; }
+
+always_inline asn_user_type_t *
+asn_user_type_for_user (asn_user_t * au)
+{ return pool_elt (asn_user_type_pool, au->user_type_index); }
+
 #define foreach_asn_session_state               \
   _ (opened)					\
   _ (provisional)                               \
@@ -459,6 +484,7 @@ typedef struct asn_exec_ack_handler_t {
   struct asn_socket_t * asn_socket;
   u32 container_offset_of_object;
   asn_exec_ack_handler_function_t * function;
+  void (* free) (struct asn_exec_ack_handler_t * ah, u32 is_force);
 } asn_exec_ack_handler_t;
 
 always_inline void *
@@ -673,7 +699,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos);
 void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos);
 
-format_function_t format_asn_user_type, format_asn_user_mark_response;
+format_function_t format_asn_user_type, format_asn_user_mark_response, format_asn_user_key;
 serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
@@ -694,5 +720,23 @@ do {                                                                    \
         }                                                               \
     }                                                                   \
 } while (0)
+
+typedef struct {
+  u8 auth_public_key[32];
+  u8 user_type_name[0];
+} asn_learn_user_ack_data_t;
+
+format_function_t format_asn_learn_user_exec_command;
+clib_error_t * asn_learn_user_from_ack (asn_main_t * am,
+                                        asn_pdu_ack_t * ack, u32 n_bytes_ack_data,
+                                        u8 * with_user_encrypt_key,
+                                        asn_user_ref_t * result_user_ref);
+
+clib_error_t *
+asn_save_users (asn_main_t * am, asn_socket_t * as, asn_user_t * for_user,
+                char * path, u32 user_type_index, uword * user_hash);
+
+clib_error_t *
+asn_fetch_path_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...);
 
 #endif /* included_asn_h */

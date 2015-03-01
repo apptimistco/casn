@@ -369,6 +369,12 @@ u8 * format_asn_user (u8 * s, va_list * va)
   return s;
 }
 
+u8 * format_asn_user_key (u8 * s, va_list * va)
+{
+  asn_user_t * au = va_arg (*va, asn_user_t *);
+  return format (s, "%U", format_hex_bytes, au->crypto_keys.public.encrypt_key, sizeof (au->crypto_keys.public.encrypt_key));
+}
+
 static void
 asn_pdu_sync_overflow (asn_pdu_t * p)
 {
@@ -720,8 +726,8 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 
       if (au != 0 && ! is_error)
         {
-          uword is_place = 0;
           /* Mark current position if valid. */
+          uword is_place = 0;
           if (au->current_marks_are_valid & (1 << is_place))
             {
               asn_position_on_earth_t pos = asn_user_mark_response_position (&au->current_marks[is_place]);
@@ -759,6 +765,8 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
 	      ah->asn_socket = as;
 	      error = ah->function (ah, ack, n_bytes_in_pdu - sizeof (ack[0]));
 	    }
+          if (ah->free)
+            ah->free (ah, /* is_force */ 0);
 	  clib_mem_free_in_container (ah, ah->container_offset_of_object);
 	}
 
@@ -1289,9 +1297,10 @@ clib_error_t * asn_request_new_user_with_type (asn_main_t * am, asn_socket_t * a
     (asn_socket_exec_newuser_ack_handler,
      sizeof (nah[0]),
      STRUCT_OFFSET_OF (asn_exec_newuser_ack_handler_t, ack_handler));
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, nah->user_type_index);
   nah->user_type_index = am->self_user_ref.type_index;
   nah->is_self_user = is_self_user;
-  return asn_socket_exec_with_ack_handler (am, as, &nah->ack_handler, "newuser%c-b%c%08x", 0, 0, nah->user_type_index);
+  return asn_socket_exec_with_ack_handler (am, as, &nah->ack_handler, "newuser%c-b%c%s", 0, 0, ut->name);
 }
 
 clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au)
@@ -1403,83 +1412,88 @@ clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout)
   return error;
 }
 
+u8 * format_asn_learn_user_exec_command (u8 * s, va_list * va)
+{
+  asn_user_key_t * k = va_arg (*va, asn_user_key_t *);
+  u32 n_bytes_in_key = va_arg (*va, u32);
+  ASSERT (n_bytes_in_key > 0 && n_bytes_in_key <= sizeof (k->data));
+  return format (s, "cat%c~%U/asn/auth%c~%U/asn/user",
+                 0,
+                 format_hex_bytes, k->data, n_bytes_in_key,
+                 0,
+                 format_hex_bytes, k->data, n_bytes_in_key);
+}
+
+clib_error_t *
+asn_learn_user_from_ack (asn_main_t * am, asn_pdu_ack_t * ack, u32 n_bytes_ack_data,
+                         u8 * with_user_encrypt_key,
+                         asn_user_ref_t * result_user_ref)
+{
+  clib_error_t * error = 0;
+  asn_user_t * au;
+  asn_user_type_t * ut;
+  asn_learn_user_ack_data_t * ack_data = (void *) ack->data;
+  char * name_copy = 0;
+
+  if (n_bytes_ack_data <= sizeof (ack_data[0]))
+    {
+      error = clib_error_return (0, "expected at least %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
+      goto done;
+    }
+
+  name_copy = (char *) format (0, "%*s%c", n_bytes_ack_data - sizeof (ack_data[0]), ack_data->user_type_name, 0);
+  ut = asn_user_type_by_name (name_copy);
+
+  if (! ut)
+    {
+      error = clib_error_return (0, "unknown user type with name %s", name_copy);
+      goto done;
+    }
+
+  if (am->verbose)
+    clib_warning ("type `%s', encr %U, auth %U",
+                  ut->name,
+		  format_hex_bytes, with_user_encrypt_key, crypto_box_public_key_bytes,
+		  format_hex_bytes, ack_data->auth_public_key, sizeof (ack_data->auth_public_key));
+
+  au = asn_update_peer_user (am, ASN_TX, ut->index, with_user_encrypt_key, /* auth key */ ack_data->auth_public_key);
+  result_user_ref->user_index = au->index;
+  result_user_ref->type_index = ut->index;
+
+ done:
+  vec_free (name_copy);
+  return error;
+}
+
 typedef struct {
   asn_exec_ack_handler_t ack_handler;
   u8 user_encrypt_key[crypto_box_public_key_bytes];
   asn_user_mark_response_t mark_response;
 } learn_user_from_auth_response_exec_ack_handler_t;
 
-static clib_error_t * learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+static clib_error_t *
+learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   clib_error_t * error = 0;
-  struct {
-    u8 auth_public_key[32];
-    u8 user_type_as_u32_hex[8];
-  } * ack_data = (void *) ack->data;
-  asn_main_t * am = ah->asn_main;
-  learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
   asn_user_t * au;
   asn_user_type_t * ut;
-  u32 user_type_index;
+  asn_user_ref_t user_ref;
+  learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
+  asn_user_mark_response_t * mr = &lah->mark_response;
+  uword is_place = asn_user_mark_response_is_place (mr);
 
-  if (n_bytes_ack_data != sizeof (ack_data[0]))
-    {
-      error = clib_error_return (0, "expected %d bytes asn/auth + asn/user; received %d", sizeof (ack_data[0]), n_bytes_ack_data);
-      goto done;
-    }
+  error = asn_learn_user_from_ack (ah->asn_main, ack, n_bytes_ack_data, lah->user_encrypt_key,
+                                   &user_ref);
+  if (error)
+    goto done;
 
-  {
-    int i;
-    user_type_index = 0;
-    for (i = 0; i < ARRAY_LEN (ack_data->user_type_as_u32_hex); i++)
-      {
-	u8 c = ack_data->user_type_as_u32_hex[i];
-	u8 d;
-	switch (c)
-	  {
-	  case '0' ... '9':
-	    d = c - '0';
-	    break;
+  au = asn_user_by_ref (&user_ref);
+  ut = pool_elt (asn_user_type_pool, user_ref.type_index);
 
-	  case 'a' ... 'f':
-	    d = 10 + (c - 'a');
-	    break;
-
-	  case 'A' ... 'F':
-	    d = 10 + (c - 'A');
-	    break;
-
-	  default:
-	    error = clib_error_return (0, "expected hex digit found %c", c);
-	    goto done;
-	  }
-	user_type_index = (user_type_index << 4) | d;
-      }
-  }
-
-  if (pool_is_free_index (asn_user_type_pool, user_type_index))
-    {
-      error = clib_error_return (0, "unknown user type %d", user_type_index);
-      goto done;
-    }
-
-  if (am->verbose)
-    clib_warning ("type %U, encr %U, auth %U",
-		  format_asn_user_type, user_type_index,
-		  format_hex_bytes, lah->user_encrypt_key, sizeof (lah->user_encrypt_key),
-		  format_hex_bytes, ack_data->auth_public_key, sizeof (ack_data->auth_public_key));
-
-  {
-    asn_user_mark_response_t * mr = &lah->mark_response;
-    uword is_place = asn_user_mark_response_is_place (mr);
-    au = asn_update_peer_user (am, ASN_TX, user_type_index, lah->user_encrypt_key, /* auth key */ ack_data->auth_public_key);
-    au->current_marks_are_valid |= 1 << is_place;
-    au->current_marks[is_place] = mr[0];
-
-    ut = pool_elt (asn_user_type_pool, user_type_index);
-    if (ut->did_learn_new_user)
-      ut->did_learn_new_user (au, is_place);
-  }
+  au->current_marks_are_valid |= 1 << is_place;
+  au->current_marks[is_place] = mr[0];
+  if (ut->did_learn_new_user)
+    ut->did_learn_new_user (au, is_place);
 
  done:
   return error;
@@ -1519,14 +1533,9 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
   lah->mark_response = r[0];
 
-  /* Ask for concatenation of user's asn/auth + asn/user. */
   return asn_socket_exec_with_ack_handler
     (am, as,
-     &lah->ack_handler, "cat%c~%U/asn/auth%c~%U/asn/user",
-     0,
-     format_hex_bytes, r->user, sizeof (r->user),
-     0,
-     format_hex_bytes, r->user, sizeof (r->user));
+     &lah->ack_handler, "%U", format_asn_learn_user_exec_command, r->user, sizeof (r->user));
 }
 
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos)
@@ -1565,6 +1574,62 @@ void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_
       if (error)
         clib_error_report (error);
     }
+}
+
+static int asn_sort_user_keys (asn_user_key_t * k1, asn_user_key_t * k2)
+{ return memcmp (k1->data, k2->data, sizeof (k1->data)); }
+
+static u8 * format_asn_user_key_vector (u8 * s, va_list * va)
+{
+  asn_user_key_t * keys = va_arg (*va, asn_user_key_t *);
+  asn_user_key_t * k;
+  vec_foreach (k, keys)
+    vec_add (s, k->data, sizeof (k->data));
+  return s;
+}
+
+clib_error_t *
+asn_save_users (asn_main_t * am, asn_socket_t * as, asn_user_t * for_user, char * path, u32 user_type_index, uword * user_hash)
+{
+  clib_error_t * error = 0;
+  asn_user_key_t * keys = 0, * k;
+  hash_pair_t * p;
+
+  /* Get keys and sort them. */
+  hash_foreach_pair (p, user_hash, ({
+    asn_user_t * au = asn_user_by_index_and_type (/* user_index */ p->key, user_type_index);
+    vec_add2 (keys, k, 1);
+    memcpy (k->data, au->crypto_keys.public.encrypt_key, sizeof (k->data));
+  }));
+  if (vec_len (keys) > 1)
+    vec_sort (keys, (void *) asn_sort_user_keys);
+
+  error = asn_socket_exec (am, as, 0, "blob%c~%U/%s%c-%c%c%U",
+                           0,
+                           format_asn_user_key, for_user, path, 0,
+                           0, 0,
+                           format_asn_user_key_vector, keys);
+  vec_free (keys);
+  return error;
+}
+
+clib_error_t *
+asn_fetch_path_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...)
+{
+  clib_error_t * error;
+  va_list va;
+  u8 * path;
+
+  va_start (va, fmt);
+  path = va_format (0, fmt, &va);
+  va_end (va);
+
+  error = asn_socket_exec (am, as, 0, "fetch%c~%U/%v",
+                           0,
+                           format_asn_user_key, au,
+                           path);
+  vec_free (path);
+  return error;
 }
 
 clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user_socket_offset_of_asn_socket)
@@ -1606,7 +1671,11 @@ void asn_socket_free (asn_socket_t * as)
           {
             asn_exec_ack_handler_t * ah = as->exec_ack_handler_pool[i];
             if (ah)
-              clib_mem_free_in_container (ah, ah->container_offset_of_object);
+              {
+                if (ah->free)
+                  ah->free (ah, /* is_force */ 1);
+                clib_mem_free_in_container (ah, ah->container_offset_of_object);
+              }
             pool_put_index (as->exec_ack_handler_pool, i);
           }
       }
