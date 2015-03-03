@@ -225,12 +225,11 @@ always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
 
 typedef struct {
   asn_app_gen_user_t gen_user;
-  u32 show_user_on_map : 1;
-  u32 is_checked_in : 1;
   uword * user_friends;
+  uword * events_rsvpd_for_user;
+  u32 is_checked_in;
   u32 recent_check_in_location_index;
   asn_app_location_t recent_check_in_locations[32];
-  uword * events_rsvpd_for_user;
 } asn_app_user_t;
 
 always_inline asn_app_location_t *
@@ -280,6 +279,10 @@ typedef struct {
 
   /* Hash of user indices that have RSVPd for this event. */
   uword * users_rsvpd_for_event;
+
+  /* Hash of user/group indices that have been invited to this event. */
+  uword * users_invited_to_event;
+  uword * groups_invited_to_event;
 } asn_app_event_t;
 
 always_inline void asn_app_event_free (asn_app_event_t * e)
@@ -287,6 +290,8 @@ always_inline void asn_app_event_free (asn_app_event_t * e)
   asn_app_gen_user_free (&e->gen_user);
   asn_app_location_free (&e->location);
   hash_free (e->users_rsvpd_for_event);
+  hash_free (e->users_invited_to_event);
+  hash_free (e->groups_invited_to_event);
 }
 
 typedef struct {
@@ -294,6 +299,20 @@ typedef struct {
   u32 * attribute_map_for_unserialize;
   uword * attribute_by_name;
 } asn_app_attribute_main_t;
+
+#define foreach_asn_app_subscribers_blob_type           \
+  _ (asn_subscribers, "asn/subscribers")                \
+  _ (event_users_invited, "event_users_invited")        \
+  _ (event_groups_invited, "event_groups_invited")      \
+  _ (event_users_rsvpd, "event_users_rsvpd")            \
+  _ (user_friends, "user_friends")                      \
+  _ (user_events_rsvpd, "user_events_rsvpd")
+
+typedef enum {
+#define _(a,b) ASN_APP_SUBSCRIBERS_BLOB_TYPE_##a,
+  foreach_asn_app_subscribers_blob_type
+#undef _
+} asn_app_subscribers_blob_type_t;
 
 typedef struct {
   asn_user_type_t user_type;
@@ -308,8 +327,9 @@ typedef struct {
 
   void (* did_receive_message) (asn_user_t * au, asn_app_message_header_t * msg);
 
-  void (* update_subscribers) (asn_main_t * am,
-                               asn_user_t * au, asn_user_ref_t * subcriber_user_refs, u32 n_subscriber_user_refs);
+  void (* update_subscribers) (asn_main_t * am, asn_user_t * au,
+                               asn_app_subscribers_blob_type_t blob_type,
+                               asn_user_ref_t * subcriber_user_refs, u32 n_subscriber_user_refs);
 } asn_app_user_type_t;
 
 always_inline asn_app_user_type_t *

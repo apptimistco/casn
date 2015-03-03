@@ -1094,6 +1094,32 @@ unserialize_asn_app_gen_user (serialize_main_t * m, va_list * va)
   unserialize (m, unserialize_asn_app_attributes_for_index, &ut->attribute_main, u->asn_user.index);
 }
 
+static void serialize_set_of_users_hash (serialize_main_t * m, va_list * va)
+{
+  uword * hash = va_arg (*va, uword *);
+  hash_pair_t * p;
+
+  serialize_likely_small_unsigned_integer (m, hash_elts (hash));
+  hash_foreach_pair (p, hash, serialize_likely_small_unsigned_integer (m, p->key));
+}
+
+static void unserialize_set_of_users_hash (serialize_main_t * m, va_list * va)
+{
+  uword ** hash = va_arg (*va, uword **);
+  uword i, n_users = unserialize_likely_small_unsigned_integer (m);
+  uword * result = 0;
+  if (n_users > 0)
+    {
+      result = hash_create (sizeof (uword), /* value bytes */ 0);
+      for (i = 0; i < n_users; i++)
+        {
+          uword ui = unserialize_likely_small_unsigned_integer (m);
+          hash_set1 (result, ui);
+        }
+    }
+  *hash = result;
+}
+
 static void
 serialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
 {
@@ -1103,6 +1129,8 @@ serialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
+      serialize (m, serialize_set_of_users_hash, u[i].user_friends);
+      serialize (m, serialize_set_of_users_hash, u[i].events_rsvpd_for_user);
     }
 }
 
@@ -1115,6 +1143,8 @@ unserialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
+      unserialize (m, unserialize_set_of_users_hash, &u[i].user_friends);
+      unserialize (m, unserialize_set_of_users_hash, &u[i].events_rsvpd_for_user);
     }
 }
 
@@ -1127,12 +1157,7 @@ serialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
-
-      {
-        hash_pair_t * p;
-        serialize_likely_small_unsigned_integer (m, hash_elts (u[i].group_users));
-        hash_foreach_pair (p, u[i].group_users, serialize_likely_small_unsigned_integer (m, p->key));
-      }
+      serialize (m, serialize_set_of_users_hash, u[i].group_users);
     }
 }
 
@@ -1145,19 +1170,7 @@ unserialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
   for (i = 0; i < n_users; i++)
     {
       unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
-
-      {
-        uword j, user_index, n_group_users = unserialize_likely_small_unsigned_integer (m);
-        if (n_group_users > 0)
-          {
-            u[i].group_users = hash_create (sizeof (uword), /* value bytes */ 0);
-            for (j = 0; j < n_group_users; j++)
-              {
-                user_index = unserialize_likely_small_unsigned_integer (m);
-                hash_set1 (u[i].group_users, user_index);
-              }
-          }
-      }
+      unserialize (m, unserialize_set_of_users_hash, &u[i].group_users);
     }
 }
 
@@ -1201,6 +1214,9 @@ serialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
     {
       serialize (m, serialize_asn_app_gen_user, &es[i].gen_user);
       serialize (m, serialize_asn_app_location, &es[i].location);
+      serialize (m, serialize_set_of_users_hash, es[i].users_rsvpd_for_event);
+      serialize (m, serialize_set_of_users_hash, es[i].users_invited_to_event);
+      serialize (m, serialize_set_of_users_hash, es[i].groups_invited_to_event);
     }
 }
 
@@ -1214,6 +1230,9 @@ unserialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
     {
       unserialize (m, unserialize_asn_app_gen_user, &es[i].gen_user);
       unserialize (m, unserialize_asn_app_location, &es[i].location);
+      unserialize (m, unserialize_set_of_users_hash, &es[i].users_rsvpd_for_event);
+      unserialize (m, unserialize_set_of_users_hash, &es[i].users_invited_to_event);
+      unserialize (m, unserialize_set_of_users_hash, &es[i].groups_invited_to_event);
     }
 }
 
@@ -1454,8 +1473,9 @@ asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t us
 
 /* Handler for blobs written with previous function. */
 static clib_error_t *
-asn_app_user_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+asn_app_user_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
+  asn_main_t * am = bh->asn_main;
   clib_error_t * error = 0;
   asn_user_t * au;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
@@ -1518,6 +1538,7 @@ typedef struct {
   u32 n_unknown_users;
   /* User 0 is owner; users > 0 are subscribers. */
   asn_user_and_key_t * users;
+  uword blob_type;
 } asn_app_users_lookup_t;
 
 always_inline void
@@ -1553,7 +1574,7 @@ static void handle_subscribers (asn_main_t * am, asn_app_users_lookup_t * lu)
       vec_add1 (urs, r);
     }
 
-  app_ut->update_subscribers (am, owner, urs, vec_len (urs));
+  app_ut->update_subscribers (am, owner, lu->blob_type, urs, vec_len (urs));
 
   if (app_ut->did_update_user)
     app_ut->did_update_user (owner, /* is_new_user */ 0);
@@ -1624,8 +1645,10 @@ learn_user_for_subscribers_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pd
 }
 
 static clib_error_t *
-asn_app_subscribers_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+asn_app_subscribers_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
+  asn_main_t * am = bh->asn_main;
+  asn_socket_t * as = bh->asn_socket;
   clib_error_t * error = 0;
   asn_user_key_t * subscribers = asn_pdu_contents_for_blob (blob);
   u32 i, n_subscribers;
@@ -1641,6 +1664,8 @@ asn_app_subscribers_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_bl
       goto done;
     }
   n_subscribers /= sizeof (subscribers[0]);
+
+  lookup.blob_type = bh->blob_type;
 
   vec_resize (lookup.users, 1 + n_subscribers);
   memcpy (lookup.users[0].key.data, blob->owner, sizeof (lookup.users[0].key.data));
@@ -1901,9 +1926,11 @@ learn_user_for_received_message_exec_ack_handler (asn_exec_ack_handler_t * ah, a
 }
 
 static clib_error_t *
-asn_unnamed_blob_handler (asn_main_t * am, asn_socket_t * as,
+asn_unnamed_blob_handler (asn_blob_handler_t * bh,
                           asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
+  asn_main_t * am = bh->asn_main;
+  asn_socket_t * as = bh->asn_socket;
   clib_error_t * error = 0;
   asn_app_users_lookup_t lookup;
 
@@ -2256,8 +2283,59 @@ asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
 }
 
 static void
+asn_app_user_update_subscribers (asn_main_t * am,
+                                 asn_user_t * owner_au,
+                                 asn_app_subscribers_blob_type_t blob_type,
+                                 asn_user_ref_t * subscriber_user_refs, u32 n_subscriber_user_refs)
+{
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  asn_app_user_t * u = CONTAINER_OF (owner_au, asn_app_user_t, gen_user.asn_user);
+  asn_user_type_t * expected_user_type;
+  uword ** hp, * h, i;
+
+  expected_user_type = &app_main->user_types[ASN_APP_USER_TYPE_user].user_type;
+  switch (blob_type)
+    {
+    case ASN_APP_SUBSCRIBERS_BLOB_TYPE_user_friends:
+      hp = &u->user_friends;
+      break;
+
+    case ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_groups_invited:
+      hp = &u->events_rsvpd_for_user;
+      expected_user_type = &app_main->user_types[ASN_APP_USER_TYPE_event].user_type;
+      break;
+
+    default:
+      clib_warning ("unknown subscriber blob-type 0x%x", blob_type);
+      return;
+    }
+
+  h = *hp;
+  hash_free (h);
+  h = hash_create (sizeof (uword), /* value bytes */ 0);
+  for (i = 0; i < n_subscriber_user_refs; i++)
+    {
+      asn_user_t * subscriber_au = asn_user_by_ref (&subscriber_user_refs[i]);
+      asn_user_type_t * subscriber_ut = asn_user_type_for_user (subscriber_au);
+      if (subscriber_ut->index != expected_user_type->index)
+        {
+          if (am->verbose)
+            clib_warning ("subscriber with wrong user type %s (expected %s) ignored",
+                          subscriber_ut->name, expected_user_type->name);
+        }
+      else
+        {
+          hash_set1 (h, subscriber_au->index);
+        }
+    }
+  *hp = h;
+}
+
+static void
 asn_app_user_group_update_subscribers (asn_main_t * am,
-                                       asn_user_t * owner_au, asn_user_ref_t * subscriber_user_refs, u32 n_subscriber_user_refs)
+                                       asn_user_t * owner_au,
+                                       asn_app_subscribers_blob_type_t  blob_type,
+                                       asn_user_ref_t * subscriber_user_refs, u32 n_subscriber_user_refs)
 {
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   asn_app_user_group_t * g = CONTAINER_OF (owner_au, asn_app_user_group_t, gen_user.asn_user);
@@ -2279,6 +2357,59 @@ asn_app_user_group_update_subscribers (asn_main_t * am,
           hash_set1 (g->group_users, subscriber_au->index);
         }
     }
+}
+
+static void
+asn_app_event_update_subscribers (asn_main_t * am,
+                                  asn_user_t * owner_au,
+                                  asn_app_subscribers_blob_type_t blob_type,
+                                  asn_user_ref_t * subscriber_user_refs, u32 n_subscriber_user_refs)
+{
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  asn_app_event_t * e = CONTAINER_OF (owner_au, asn_app_event_t, gen_user.asn_user);
+  asn_user_type_t * expected_user_type;
+  uword ** hp, * h, i;
+
+  expected_user_type = &app_main->user_types[ASN_APP_USER_TYPE_user].user_type;
+  switch (blob_type)
+    {
+    case ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_users_invited:
+      hp = &e->users_invited_to_event;
+      break;
+
+    case ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_groups_invited:
+      hp = &e->groups_invited_to_event;
+      expected_user_type = &app_main->user_types[ASN_APP_USER_TYPE_user_group].user_type;
+      break;
+
+    case ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_users_rsvpd:
+      hp = &e->users_rsvpd_for_event;
+      break;
+
+    default:
+      clib_warning ("unknown subscriber blob-type 0x%x", blob_type);
+      return;
+    }
+
+  h = *hp;
+  hash_free (h);
+  h = hash_create (sizeof (uword), /* value bytes */ 0);
+  for (i = 0; i < n_subscriber_user_refs; i++)
+    {
+      asn_user_t * subscriber_au = asn_user_by_ref (&subscriber_user_refs[i]);
+      asn_user_type_t * subscriber_ut = asn_user_type_for_user (subscriber_au);
+      if (subscriber_ut->index != expected_user_type->index)
+        {
+          if (am->verbose)
+            clib_warning ("subscriber with wrong user type %s (expected %s) ignored",
+                          subscriber_ut->name, expected_user_type->name);
+        }
+      else
+        {
+          hash_set1 (h, subscriber_au->index);
+        }
+    }
+  *hp = h;
 }
 
 static void register_message_type (asn_app_message_type_t * mt)
@@ -2313,7 +2444,21 @@ void asn_app_main_init (asn_app_main_t * am)
 
   asn_set_blob_handler_for_name (&am->asn_main, asn_unnamed_blob_handler, "");
   asn_set_blob_handler_for_name (&am->asn_main, asn_app_user_blob_handler, "%s", asn_app_user_blob_name);
-  asn_set_blob_handler_for_name (&am->asn_main, asn_app_subscribers_blob_handler, "asn/subscribers");
+  asn_set_blob_handler_for_name_with_type (&am->asn_main, asn_app_subscribers_blob_handler,
+                                           ASN_APP_SUBSCRIBERS_BLOB_TYPE_asn_subscribers,
+                                           "asn/subscribers");
+  asn_set_blob_handler_for_name_with_type (&am->asn_main, asn_app_subscribers_blob_handler,
+                                           ASN_APP_SUBSCRIBERS_BLOB_TYPE_user_friends,
+                                           "user_friends");
+  asn_set_blob_handler_for_name_with_type (&am->asn_main, asn_app_subscribers_blob_handler,
+                                           ASN_APP_SUBSCRIBERS_BLOB_TYPE_user_events_rsvpd,
+                                           "user_events_rsvpd");
+  asn_set_blob_handler_for_name_with_type (&am->asn_main, asn_app_subscribers_blob_handler,
+                                           ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_users_invited,
+                                           "event_users_invited");
+  asn_set_blob_handler_for_name_with_type (&am->asn_main, asn_app_subscribers_blob_handler,
+                                           ASN_APP_SUBSCRIBERS_BLOB_TYPE_event_groups_invited,
+                                           "event_groups_invited");
 
   if (! am->user_types[ASN_APP_USER_TYPE_user].user_type.was_registered)
     {
@@ -2328,6 +2473,7 @@ void asn_app_main_init (asn_app_main_t * am)
         },
         .serialize_blob_contents = serialize_asn_app_profile_for_user,
         .unserialize_blob_contents = unserialize_asn_app_profile_for_user,
+        .update_subscribers = asn_app_user_update_subscribers,
       };
 
       am->user_types[ASN_APP_USER_TYPE_user] = t;
@@ -2367,6 +2513,7 @@ void asn_app_main_init (asn_app_main_t * am)
         },
         .serialize_blob_contents = serialize_asn_app_profile_for_event,
         .unserialize_blob_contents = unserialize_asn_app_profile_for_event,
+        .update_subscribers = asn_app_event_update_subscribers,
       };
 
       am->user_types[ASN_APP_USER_TYPE_event] = t;

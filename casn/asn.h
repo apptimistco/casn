@@ -526,11 +526,18 @@ typedef struct asn_socket_t {
 
 void asn_socket_free (asn_socket_t * as);
 
-typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_main_t * am, struct asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu);
 
-typedef struct {
+struct asn_blob_handler_t;
+typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_blob_handler_t * h,
+                                                      asn_pdu_blob_t * blob,
+                                                      u32 n_bytes_in_pdu);
+
+typedef struct asn_blob_handler_t {
+  struct asn_main_t * asn_main;
+  struct asn_socket_t * asn_socket;
   asn_blob_handler_function_t * handler_function;
   u8 * name;
+  uword blob_type;
 } asn_blob_handler_t;
 
 typedef enum {
@@ -693,6 +700,7 @@ void asn_user_type_free (asn_user_type_t * t);
 clib_error_t * asn_socket_exec_with_ack_handler (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_socket_exec (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
+void asn_set_blob_handler_for_name_with_type (asn_main_t * am, asn_blob_handler_function_t * handler, uword type, char * fmt, ...);
 void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 

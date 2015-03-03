@@ -42,9 +42,9 @@ static clib_error_t * asn_socket_exec_echo_data_ack_handler (asn_exec_ack_handle
   return 0;
 }
 
-static clib_error_t * unnamed_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+static clib_error_t * unnamed_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
-  if (am->verbose)
+  if (bh->asn_main->verbose)
     clib_warning ("%*s", asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu), asn_pdu_contents_for_blob (blob));
   return 0;
 }
@@ -183,7 +183,7 @@ int test_asn_main (unformat_input_t * input)
     }
 
   /* Unnamed "message" blobs. */
-  asn_set_blob_handler_for_name (am, unnamed_blob_handler, "");
+  asn_set_blob_handler_for_name (am, unnamed_blob_handler, /* type */ 0, "");
 
   {
     int i;

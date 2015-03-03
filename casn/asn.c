@@ -846,7 +846,9 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
   else
     {
       bh = vec_elt_at_index (am->blob_handlers, p[0]);
-      error = bh->handler_function (am, as, blob, n_bytes_in_pdu);
+      bh->asn_main = am;
+      bh->asn_socket = as;
+      error = bh->handler_function (bh, blob, n_bytes_in_pdu);
     }
 
   return error;
@@ -1326,7 +1328,11 @@ clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, as
   return asn_socket_tx (as);
 }
 
-void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler_function, char * fmt, ...)
+static void
+asn_set_blob_handler_for_name_helper (asn_main_t * am,
+                                      asn_blob_handler_function_t * handler_function,
+                                      uword blob_type,
+                                      char * fmt, ...)
 {
   va_list va;
   asn_blob_handler_t * bh;
@@ -1334,6 +1340,7 @@ void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t
   vec_add2 (am->blob_handlers, bh, 1);
 
   bh->handler_function = handler_function;
+  bh->blob_type = blob_type;
 
   va_start (va, fmt);
   bh->name = va_format (0, fmt, &va);
@@ -1343,6 +1350,27 @@ void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t
     am->blob_handler_index_by_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
 
   hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
+}
+
+void asn_set_blob_handler_for_name (asn_main_t * am,
+                                    asn_blob_handler_function_t * handler_function,
+                                    char * fmt, ...)
+{
+  va_list va;
+  va_start (va, fmt);
+  asn_set_blob_handler_for_name_helper (am, handler_function, /* blob_type */ 0, fmt, &va);
+  va_end (va);
+}
+
+void asn_set_blob_handler_for_name_with_type (asn_main_t * am,
+                                              asn_blob_handler_function_t * handler_function,
+                                              uword blob_type,
+                                              char * fmt, ...)
+{
+  va_list va;
+  va_start (va, fmt);
+  asn_set_blob_handler_for_name_helper (am, handler_function, blob_type, fmt, &va);
+  va_end (va);
 }
 
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout)
@@ -1499,8 +1527,9 @@ learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * 
   return error;
 }
 
-static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
+static clib_error_t * mark_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
+  asn_main_t * am = bh->asn_main;
   clib_error_t * error = 0;
   asn_user_mark_response_t * r = asn_pdu_contents_for_blob (blob);
   asn_user_t * au;
@@ -1534,7 +1563,7 @@ static clib_error_t * mark_blob_handler (asn_main_t * am, asn_socket_t * as, asn
   lah->mark_response = r[0];
 
   return asn_socket_exec_with_ack_handler
-    (am, as,
+    (am, bh->asn_socket,
      &lah->ack_handler, "%U", format_asn_learn_user_exec_command, r->user, sizeof (r->user));
 }
 
