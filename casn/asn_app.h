@@ -395,6 +395,23 @@ asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
   return (void *) au - ut->user_type_offset_of_asn_user;
 }
 
+always_inline uword * asn_app_users_add (uword * users, uword * user_hash)
+{
+    hash_pair_t * p;
+    if (! users)
+        users = hash_create (sizeof (uword), /* value bytes */ 0);
+    hash_foreach_pair (p, user_hash, ({ hash_set1 (users, p->key); }));
+    return users;
+}
+
+always_inline uword * asn_app_users_add_group (asn_app_main_t * am, uword * users, uword group_index)
+{
+    asn_app_user_group_t * g = asn_app_user_group_with_index (am, group_index);
+    return asn_app_users_add (users, g->group_users);
+}
+
+always_inline void asn_app_users_free (uword * users) { hash_free (users); }
+
 void asn_app_main_init (asn_app_main_t * am);
 void asn_app_main_free (asn_app_main_t * am);
 
