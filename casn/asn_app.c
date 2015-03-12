@@ -1137,6 +1137,24 @@ static void unserialize_asn_app_user_check_in_at_place (serialize_main_t * m, va
   unserialize_data (m, ci->user_key.data, sizeof (ci->user_key.data));
 }
 
+static void serialize_vec_asn_app_user_check_in_at_place (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_check_in_at_place_t * ci = va_arg (*va, asn_app_user_check_in_at_place_t *);
+  u32 n = va_arg (*va, u32);
+  u32 i;
+  for (i = 0; i < n; i++)
+    serialize (m, serialize_asn_app_user_check_in_at_place, &ci[i]);
+}
+
+static void unserialize_vec_asn_app_user_check_in_at_place (serialize_main_t * m, va_list * va)
+{
+  asn_app_user_check_in_at_place_t * ci = va_arg (*va, asn_app_user_check_in_at_place_t *);
+  u32 n = va_arg (*va, u32);
+  u32 i;
+  for (i = 0; i < n; i++)
+    unserialize (m, unserialize_asn_app_user_check_in_at_place, &ci[i]);
+}
+
 static void
 serialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
 {
@@ -1148,7 +1166,7 @@ serialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
       serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
       serialize (m, serialize_set_of_users_hash, u[i].user_friends);
       serialize (m, serialize_set_of_users_hash, u[i].events_rsvpd_for_user);
-      vec_serialize (m, u[i].check_ins, serialize_asn_app_user_check_in_at_place);
+      vec_serialize (m, u[i].check_ins, serialize_vec_asn_app_user_check_in_at_place);
     }
 }
 
@@ -1163,7 +1181,7 @@ unserialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
       unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
       unserialize (m, unserialize_set_of_users_hash, &u[i].user_friends);
       unserialize (m, unserialize_set_of_users_hash, &u[i].events_rsvpd_for_user);
-      vec_unserialize (m, &u[i].check_ins, unserialize_asn_app_user_check_in_at_place);
+      vec_unserialize (m, &u[i].check_ins, unserialize_vec_asn_app_user_check_in_at_place);
     }
 }
 
@@ -1265,7 +1283,7 @@ serialize_pool_asn_app_place (serialize_main_t * m, va_list * va)
     {
       serialize (m, serialize_asn_app_gen_user, &ps[i].gen_user);
       serialize (m, serialize_asn_app_location, &ps[i].location);
-      vec_serialize (m, ps[i].recent_check_ins_at_place, serialize_asn_app_user_check_in_at_place);
+      vec_serialize (m, ps[i].recent_check_ins_at_place, serialize_vec_asn_app_user_check_in_at_place);
     }
 }
 
@@ -1279,7 +1297,7 @@ unserialize_pool_asn_app_place (serialize_main_t * m, va_list * va)
     {
       unserialize (m, unserialize_asn_app_gen_user, &ps[i].gen_user);
       unserialize (m, unserialize_asn_app_location, &ps[i].location);
-      vec_unserialize (m, &ps[i].recent_check_ins_at_place, unserialize_asn_app_user_check_in_at_place);
+      vec_unserialize (m, &ps[i].recent_check_ins_at_place, unserialize_vec_asn_app_user_check_in_at_place);
     }
 }
 
@@ -2546,11 +2564,12 @@ learn_existing_place_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_
 
   memset (&ps, 0, sizeof (ps));
 
+  unserialize_open_data (&m, ack->data, n_bytes_ack_data);
+
   /* Only learn places with check ins. */
   if (ack->status != ASN_ACK_PDU_STATUS_success || n_bytes_ack_data == 0)
     goto done;
 
-  unserialize_open_data (&m, ack->data, n_bytes_ack_data);
   error = unserialize (&m, unserialize_asn_app_place_state, &ps);
   if (error)
     goto done;
