@@ -2786,10 +2786,10 @@ asn_app_check_in_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u
   asn_main_t * am = bh->asn_main;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   clib_error_t * error = 0;
-  asn_app_user_check_in_at_place_t ci;
+  asn_app_user_check_in_at_place_t ci_add, ** ci_vec;
   asn_user_t * au;
 
-  memset (&ci, 0, sizeof (ci));
+  memset (&ci_add, 0, sizeof (ci_add));
 
   au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
   if (! au)
@@ -2799,25 +2799,38 @@ asn_app_check_in_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u
     }
 
   error = asn_unserialize_blob_contents (am, blob, n_bytes_in_pdu,
-                                         unserialize_asn_app_user_check_in_at_place, &ci);
+                                         unserialize_asn_app_user_check_in_at_place, &ci_add);
   if (error)
     goto done;
 
   if (au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_user].user_type.index)
     {
       asn_app_user_t * user = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
-      vec_add1 (user->check_ins, ci);
+      ci_vec = &user->check_ins;
     }
   else if (au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index)
     {
       asn_app_place_t * place = CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user);
-      vec_add1 (place->recent_check_ins_at_place, ci);
+      ci_vec = &place->recent_check_ins_at_place;
     }
   else
     {
       error = clib_error_return (0, "unexpected user type %U", format_asn_user_type, au->user_type_index);
       goto done;
     }
+
+  {
+    asn_app_user_check_in_at_place_t * ci;
+    uword found_it = 0;
+    vec_foreach (ci, *ci_vec)
+      {
+        found_it = (ci_add.time_stamp_in_nsec_from_1970 == ci->time_stamp_in_nsec_from_1970
+                    && ! memcmp (ci_add.user_key.data, ci->user_key.data, sizeof (ci_add.user_key.data)));
+        if (found_it) break;
+      }
+    if (! found_it)
+      vec_add1 (*ci_vec, ci_add);
+  }
 
   {
     asn_app_user_type_t * app_ut = asn_app_user_type_for_user (au);
@@ -2827,7 +2840,7 @@ asn_app_check_in_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u
 
  done:
   if (error)
-    asn_app_user_check_in_at_place_free (&ci);
+    asn_app_user_check_in_at_place_free (&ci_add);
   return error;
 }
 
