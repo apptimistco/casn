@@ -375,6 +375,12 @@ u8 * format_asn_user_key (u8 * s, va_list * va)
   return format (s, "%U", format_hex_bytes, au->crypto_keys.public.encrypt_key, sizeof (au->crypto_keys.public.encrypt_key));
 }
 
+u8 * format_asn_service_key (u8 * s, va_list * va)
+{
+  asn_main_t * am = va_arg (*va, asn_main_t *);
+  return format (s, "%U", format_hex_bytes, am->server_keys.public.encrypt_key, sizeof (am->server_keys.public.encrypt_key));
+}
+
 static void
 asn_pdu_sync_overflow (asn_pdu_t * p)
 {
@@ -759,7 +765,7 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
       pool_put_index (as->exec_ack_handler_pool, ai);
       if (ah)
 	{
-	  if (! is_error && ah->function)
+	  if (ah->function)
 	    {
 	      ah->asn_main = am;
 	      ah->asn_socket = as;
@@ -832,16 +838,32 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
   clib_error_t * error = 0;
   asn_blob_handler_t * bh;
   uword * p;
+  u8 * n;
 
-  vec_reset_length (am->blob_name_vector_for_reuse);
+  n = 0;
   if (blob->n_name_bytes > 0)
-    vec_add (am->blob_name_vector_for_reuse, blob->name, blob->n_name_bytes);
+    vec_add (n, blob->name, blob->n_name_bytes);
 
-  p = hash_get_mem (am->blob_handler_index_by_name, am->blob_name_vector_for_reuse);
+  p = hash_get_mem (am->blob_handler_index_by_name, n);
+
+  if (! p && vec_len (n) > 1)
+    {
+      uword l = vec_len (n);
+      word last_slash;
+      for (last_slash = l - 1; last_slash != 0; last_slash--)
+        if (n[last_slash] == '/') break;
+      if (last_slash > 0 && last_slash < l - 1)
+        {
+          _vec_len (n) = last_slash;
+          p = hash_get_mem (am->blob_handler_index_by_directory_name, n);
+          _vec_len (n) = l;
+        }
+    }
+
   if (! p)
     {
       if (am->verbose)
-	clib_warning ("no handler for blob name `%v'", am->blob_name_vector_for_reuse);
+	clib_warning ("no handler for blob name `%v'", n);
     }
   else
     {
@@ -850,6 +872,8 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
       bh->asn_socket = as;
       error = bh->handler_function (bh, blob, n_bytes_in_pdu);
     }
+
+  vec_free (n);
 
   return error;
 }
@@ -1332,24 +1356,33 @@ static void
 asn_set_blob_handler_for_name_helper (asn_main_t * am,
                                       asn_blob_handler_function_t * handler_function,
                                       uword blob_type,
-                                      char * fmt, ...)
+                                      char * fmt, va_list * va)
 {
-  va_list va;
   asn_blob_handler_t * bh;
+  u8 * e;
 
   vec_add2 (am->blob_handlers, bh, 1);
 
   bh->handler_function = handler_function;
   bh->blob_type = blob_type;
 
-  va_start (va, fmt);
-  bh->name = va_format (0, fmt, &va);
-  va_end (va);
+  bh->name = va_format (0, fmt, va);
 
-  if (! am->blob_handler_index_by_name)
-    am->blob_handler_index_by_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
-
-  hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
+  e = vec_end (bh->name);
+  /* PATH / * matches all blobs in directory PATH. */
+  if (vec_len (bh->name) > 2 && e[-2] == '/' && e[-1] == '*')
+    {
+      if (! am->blob_handler_index_by_directory_name)
+        am->blob_handler_index_by_directory_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
+      _vec_len (bh->name) -= 2;
+      hash_set_mem (am->blob_handler_index_by_directory_name, bh->name, bh - am->blob_handlers);
+    }
+  else
+    {
+      if (! am->blob_handler_index_by_name)
+        am->blob_handler_index_by_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
+      hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
+    }
 }
 
 void asn_set_blob_handler_for_name (asn_main_t * am,
@@ -1371,6 +1404,77 @@ void asn_set_blob_handler_for_name_with_type (asn_main_t * am,
   va_start (va, fmt);
   asn_set_blob_handler_for_name_helper (am, handler_function, blob_type, fmt, &va);
   va_end (va);
+}
+
+clib_error_t *
+asn_save_blob_with_contents (asn_main_t * am, asn_socket_t * as, asn_user_t * au, u8 * blob_contents,
+                             char * fmt, ...)
+{
+  clib_error_t * error;
+  u8 * path;
+  va_list va;
+
+  va_start (va, fmt);
+  path = va_format (0, fmt, &va);
+  va_end (va);
+
+  error = asn_socket_exec_with_ack_handler
+    (am, as, /* ack handler */ 0,
+     "blob%c~%U/%v%c-%c%c%v", 0,
+     format_hex_bytes, au->crypto_keys.public.encrypt_key, sizeof (au->crypto_keys.public.encrypt_key),
+     path,
+     0, 0, 0,
+     blob_contents);
+
+  vec_free (path);
+
+  return error;
+}
+
+clib_error_t *
+asn_save_serialized_blob (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...)
+{
+  serialize_main_t m;
+  clib_error_t * error;
+  u8 * path, * blob_contents;
+  va_list va;
+
+  va_start (va, fmt);
+  path = va_format (0, fmt, &va);
+  serialize_open_vector (&m, 0);
+  error = va_serialize (&m, &va);
+  blob_contents = serialize_close_vector (&m);
+  va_end (va);
+
+  error = asn_socket_exec_with_ack_handler
+    (am, as, /* ack handler */ 0,
+     "blob%c~%U/%v%c-%c%c%v", 0,
+     format_hex_bytes, au->crypto_keys.public.encrypt_key, sizeof (au->crypto_keys.public.encrypt_key),
+     path,
+     0, 0, 0,
+     blob_contents);
+
+  vec_free (path);
+  vec_free (blob_contents);
+
+  return error;
+}
+
+clib_error_t *
+asn_unserialize_blob_contents (asn_main_t * am, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu, ...)
+{
+  clib_error_t * error;
+  va_list va;
+  serialize_main_t m;
+  serialize_open_data (&m,
+                       asn_pdu_contents_for_blob (blob),
+                       asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
+  va_start (va, n_bytes_in_pdu);
+  error = va_unserialize (&m, &va);
+  va_end (va);
+
+  serialize_close (&m);
+  return error;
 }
 
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout)
@@ -1745,7 +1849,6 @@ void asn_main_free (asn_main_t * am)
 	hash_free (am->user_ref_by_public_encrypt_key_first_8_bytes[i]);
       }
   }
-  vec_free (am->blob_name_vector_for_reuse);
   {
     int i;
     vec_foreach_index (i, am->blob_handlers)

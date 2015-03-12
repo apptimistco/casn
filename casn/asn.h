@@ -597,11 +597,10 @@ typedef struct asn_main_t {
   uword * user_ref_by_public_encrypt_key_first_7_bytes[ASN_N_RX_TX];
   uword * user_ref_by_public_encrypt_key_first_8_bytes[ASN_N_RX_TX];
 
-  u8 * blob_name_vector_for_reuse;
-
   asn_blob_handler_t * blob_handlers;
 
   uword * blob_handler_index_by_name;
+  uword * blob_handler_index_by_directory_name;
 } asn_main_t;
 
 always_inline asn_socket_t *
@@ -707,7 +706,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos);
 void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos);
 
-format_function_t format_asn_user_type, format_asn_user_mark_response, format_asn_user_key;
+format_function_t format_asn_user_type, format_asn_user_mark_response, format_asn_user_key, format_asn_service_key;
 serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
@@ -746,5 +745,12 @@ asn_save_users (asn_main_t * am, asn_socket_t * as, asn_user_t * for_user,
 
 clib_error_t *
 asn_fetch_path_for_user (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...);
+
+clib_error_t *
+asn_save_blob_with_contents (asn_main_t * am, asn_socket_t * as, asn_user_t * au, u8 * contents, char * fmt, ...);
+clib_error_t *
+asn_save_serialized_blob (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...);
+clib_error_t *
+asn_unserialize_blob_contents (asn_main_t * am, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu, ...);
 
 #endif /* included_asn_h */
