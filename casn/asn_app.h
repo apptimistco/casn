@@ -27,11 +27,21 @@ typedef struct {
 
 always_inline void asn_app_location_free (asn_app_location_t * l)
 {
-  vec_free (l->unique_id);
   uword i;
+  vec_free (l->unique_id);
   vec_foreach_index (i, l->address_lines) vec_free (l->address_lines[i]);
   vec_free (l->address_lines);
   vec_free (l->thumbnail_as_image_data);
+}
+
+always_inline void asn_app_location_dup (asn_app_location_t * dst, asn_app_location_t * l)
+{
+  uword i;
+  memset (dst, 0, sizeof (dst[0]));
+  dst->unique_id = vec_dup (l->unique_id);
+  vec_resize (dst->address_lines, vec_len (l->address_lines));
+  vec_foreach_index (i, l->address_lines) dst->address_lines[i] = vec_dup (l->address_lines[i]);
+  dst->thumbnail_as_image_data = vec_dup (l->thumbnail_as_image_data);
 }
 
 typedef struct {
@@ -224,31 +234,34 @@ always_inline void asn_app_gen_user_free (asn_app_gen_user_t * u)
 }
 
 typedef struct {
+  asn_user_key_t user_key;
+  u64 time_stamp_in_nsec_from_1970;
+  u8 * message;
+} asn_app_user_check_in_at_place_t;
+
+always_inline void asn_app_user_check_in_at_place_free (asn_app_user_check_in_at_place_t * c)
+{ vec_free (c->message); }
+
+typedef struct {
   asn_app_gen_user_t gen_user;
   uword * user_friends;
   uword * events_rsvpd_for_user;
-  u32 is_checked_in;
-  u32 recent_check_in_location_index;
-  asn_app_location_t recent_check_in_locations[32];
+  asn_app_user_check_in_at_place_t * check_ins;
 } asn_app_user_t;
 
-always_inline asn_app_location_t *
-asn_app_check_in_location_for_user (asn_app_user_t * au)
-{
-  return (au->is_checked_in
-          ? (au->recent_check_in_locations
-             + ((au->recent_check_in_location_index - 1) % ARRAY_LEN (au->recent_check_in_locations)))
-          : 0);
-}
+always_inline asn_app_user_check_in_at_place_t *
+asn_app_last_check_in_location_for_user (asn_app_user_t * au)
+{ return au->check_ins ? vec_end (au->check_ins) - 1 : 0; }
 
 always_inline void asn_app_user_free (asn_app_user_t * u)
 {
   asn_app_gen_user_free (&u->gen_user);
 
   {
-    int i;
-    for (i = 0; i < ARRAY_LEN (u->recent_check_in_locations); i++)
-      asn_app_location_free (&u->recent_check_in_locations[i]);
+    asn_app_user_check_in_at_place_t * ci;
+    vec_foreach (ci, u->check_ins)
+      asn_app_user_check_in_at_place_free (ci);
+    vec_free (u->check_ins);
   }
 
   hash_free (u->user_friends);
@@ -293,6 +306,12 @@ always_inline void asn_app_event_free (asn_app_event_t * e)
   hash_free (e->users_invited_to_event);
   hash_free (e->groups_invited_to_event);
 }
+
+typedef struct {
+  asn_app_gen_user_t gen_user;
+  asn_app_location_t location;
+  asn_app_user_check_in_at_place_t * recent_check_ins_at_place;
+} asn_app_place_t;
 
 typedef struct {
   asn_app_attribute_t * attributes;
@@ -353,6 +372,8 @@ typedef struct {
   asn_main_t asn_main;
 
   asn_app_user_type_t user_types[ASN_APP_N_USER_TYPE];
+
+  uword * place_index_by_unique_id;
 } asn_app_main_t;
 
 always_inline asn_app_user_t *
@@ -384,6 +405,27 @@ asn_app_event_with_index (asn_app_main_t * am, u32 index)
   return pool_elt_at_index (us, index);
 }
 
+always_inline asn_app_place_t *
+asn_app_place_with_index (asn_app_main_t * am, u32 index)
+{
+  asn_app_place_t * ps = am->user_types[ASN_APP_USER_TYPE_place].user_type.user_pool;
+  return pool_elt_at_index (ps, index);
+}
+
+always_inline asn_app_place_t *
+asn_app_place_with_unique_id (asn_app_main_t * am, u8 * unique_id)
+{
+  uword * p = hash_get_mem (am->place_index_by_unique_id, unique_id);
+  return p ? asn_app_place_with_index (am, p[0]) : 0;
+}
+
+always_inline asn_app_place_t *
+asn_app_place_with_key (asn_app_main_t * am, u8 * encrypt_key)
+{
+  asn_user_t * au = asn_user_with_encrypt_key (&am->asn_main, ASN_TX, encrypt_key);
+  return au ? CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user) : 0;
+}
+
 always_inline void *
 asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
 {
@@ -395,19 +437,33 @@ asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
   return (void *) au - ut->user_type_offset_of_asn_user;
 }
 
-always_inline uword * asn_app_users_add (uword * users, uword * user_hash)
+always_inline uword * asn_app_users_add1 (uword * users, uword user_index)
+{
+  if (! users)
+    users = hash_create (sizeof (uword), /* value bytes */ 0);
+  hash_set1 (users, user_index);
+  return users;
+}
+
+always_inline uword * asn_app_users_del1 (uword * users, uword user_index)
+{
+  hash_unset (users, user_index);
+  return users;
+}
+
+always_inline uword * asn_app_users_add_hash (uword * users, uword * user_hash)
 {
     hash_pair_t * p;
-    if (! users)
-        users = hash_create (sizeof (uword), /* value bytes */ 0);
-    hash_foreach_pair (p, user_hash, ({ hash_set1 (users, p->key); }));
+    hash_foreach_pair (p, user_hash, ({
+          users = asn_app_users_add1 (users, p->key);
+    }));
     return users;
 }
 
 always_inline uword * asn_app_users_add_group (asn_app_main_t * am, uword * users, uword group_index)
 {
     asn_app_user_group_t * g = asn_app_user_group_with_index (am, group_index);
-    return asn_app_users_add (users, g->group_users);
+    return asn_app_users_add_hash (users, g->group_users);
 }
 
 always_inline void asn_app_users_free (uword * users) { hash_free (users); }
@@ -488,5 +544,8 @@ asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
                                          asn_app_user_type_enum_t to_user_type,
                                          u32 to_user_index,
                                          asn_app_invitation_type_t invitation_type);
+
+clib_error_t * asn_app_find_existing_place_with_location (asn_app_main_t * am, asn_app_location_t * location);
+clib_error_t * asn_app_check_in_at_location (asn_app_main_t * am, asn_app_location_t * location, u8 * check_in_message);
 
 #endif /* included_asn_app_h */
