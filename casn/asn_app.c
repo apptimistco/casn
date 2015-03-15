@@ -476,8 +476,14 @@ unserialize_asn_app_profile_attributes_for_index (serialize_main_t * m, va_list 
 
 void * asn_app_get_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 {
-  asn_app_attribute_t * pa = vec_elt_at_index (am->attributes, ai);
-  asn_app_attribute_type_t type = asn_app_attribute_value_type (pa);
+  asn_app_attribute_t * pa;
+  asn_app_attribute_type_t type;
+
+  if (ai >= vec_len (am->attributes))
+    return 0;
+
+  pa = vec_elt_at_index (am->attributes, ai);
+  type = asn_app_attribute_value_type (pa);
 
   if (! clib_bitmap_get (pa->value_is_valid_bitmap, ui))
     return 0;
@@ -800,9 +806,15 @@ void asn_app_set_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i, 
 
 u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
 {
-  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
+  asn_app_attribute_t * a;
+  asn_app_attribute_type_t vt;
+
+  if (ai >= vec_len (am->attributes))
+    return 0;
+
+  a = vec_elt_at_index (am->attributes, ai);
   ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_single_choice);
-  asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
+  vt = asn_app_attribute_value_type (a);
 
   if (! clib_bitmap_get (a->value_is_valid_bitmap, i))
     return 0;
@@ -830,11 +842,18 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 i)
 
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 i, uword * r)
 {
-  asn_app_attribute_t * a = vec_elt_at_index (am->attributes, ai);
-  ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice);
-  asn_app_attribute_type_t vt = asn_app_attribute_value_type (a);
+  asn_app_attribute_t * a;
+  asn_app_attribute_type_t vt;
 
   clib_bitmap_zero (r);
+
+  if (ai >= vec_len (am->attributes))
+    return r;
+
+  a = vec_elt_at_index (am->attributes, ai);
+  ASSERT (a->type == ASN_APP_ATTRIBUTE_TYPE_oneof_multiple_choice);
+  vt = asn_app_attribute_value_type (a);
+
   if (! clib_bitmap_get (a->value_is_valid_bitmap, i))
     return r;
 
@@ -1284,6 +1303,7 @@ serialize_pool_asn_app_place (serialize_main_t * m, va_list * va)
       serialize (m, serialize_asn_app_gen_user, &ps[i].gen_user);
       serialize (m, serialize_asn_app_location, &ps[i].location);
       vec_serialize (m, ps[i].recent_check_ins_at_place, serialize_vec_asn_app_user_check_in_at_place);
+      serialize (m, serialize_asn_private_keys, &ps[i].gen_user.asn_user.crypto_keys.private);
     }
 }
 
@@ -1298,6 +1318,7 @@ unserialize_pool_asn_app_place (serialize_main_t * m, va_list * va)
       unserialize (m, unserialize_asn_app_gen_user, &ps[i].gen_user);
       unserialize (m, unserialize_asn_app_location, &ps[i].location);
       vec_unserialize (m, &ps[i].recent_check_ins_at_place, unserialize_vec_asn_app_user_check_in_at_place);
+      unserialize (m, unserialize_asn_private_keys, &ps[i].gen_user.asn_user.crypto_keys.private);
     }
 }
 
@@ -1386,6 +1407,7 @@ serialize_asn_app_profile_for_gen_user (serialize_main_t * m, va_list * va)
 {
   asn_app_user_type_t * ut = va_arg (*va, asn_app_user_type_t *);
   asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
+  serialize (m, serialize_asn_public_keys, &u->asn_user.crypto_keys.public);
   serialize (m, serialize_asn_app_profile_attributes_for_index, &ut->attribute_main, u->asn_user.index);
   vec_serialize (m, u->photos, serialize_vec_asn_app_photo);
 }
@@ -1395,6 +1417,7 @@ unserialize_asn_app_profile_for_gen_user (serialize_main_t * m, va_list * va)
 {
   asn_app_user_type_t * ut = va_arg (*va, asn_app_user_type_t *);
   asn_app_gen_user_t * u = va_arg (*va, asn_app_gen_user_t *);
+  unserialize (m, unserialize_asn_public_keys, &u->asn_user.crypto_keys.public);
   unserialize (m, unserialize_asn_app_profile_attributes_for_index, &ut->attribute_main, u->asn_user.index);
   vec_unserialize (m, &u->photos, unserialize_vec_asn_app_photo);
 }
@@ -1470,6 +1493,7 @@ serialize_asn_app_profile_for_place (serialize_main_t * m, va_list * va)
   serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
   serialize (m, serialize_asn_app_profile_for_gen_user, ut, &p->gen_user);
   serialize (m, serialize_asn_app_location, &p->location);
+  serialize (m, serialize_asn_private_keys, &p->gen_user.asn_user.crypto_keys.private);
 }
 
 static void
@@ -1481,6 +1505,7 @@ unserialize_asn_app_profile_for_place (serialize_main_t * m, va_list * va)
   unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_place_for_profile");
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &p->gen_user);
   unserialize (m, unserialize_asn_app_location, &p->location);
+  unserialize (m, unserialize_asn_private_keys, &p->gen_user.asn_user.crypto_keys.private);
 }
 
 static void asn_app_free_user (asn_user_t * au)
@@ -1522,6 +1547,17 @@ static void asn_app_free_place (asn_user_t * au)
 
 static char * asn_app_user_blob_name = "asn_app_user";
 
+static void serialize_asn_app_user_blob_contents (serialize_main_t * m, va_list * va)
+{
+  asn_app_main_t * am = va_arg (*va, asn_app_main_t *);
+  asn_user_t * au = va_arg (*va, asn_user_t *);
+  asn_user_type_t * ut = pool_elt (asn_user_type_pool, au->user_type_index);
+  asn_app_user_type_t * app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
+  void * app_user = ut->user_pool + au->index * ut->user_type_n_bytes;
+  serialize_cstring (m, ut->name);
+  serialize (m, app_ut->serialize_blob_contents, am, app_user);
+}
+
 static clib_error_t *
 asn_app_user_update_blob_helper (asn_app_main_t * app_main,
                                  asn_app_user_type_enum_t user_type,
@@ -1534,7 +1570,7 @@ asn_app_user_update_blob_helper (asn_app_main_t * app_main,
   serialize_main_t m;
   void * app_user;
   asn_user_t * au;
-  u8 * v;
+  u8 * v = 0;
   clib_error_t * error = 0;
 
   ASSERT (user_type < ARRAY_LEN (app_main->user_types));
@@ -1546,11 +1582,10 @@ asn_app_user_update_blob_helper (asn_app_main_t * app_main,
   au = app_user + ut->user_type_offset_of_asn_user;
 
   serialize_open_vector (&m, 0);
-  serialize_likely_small_unsigned_integer (&m, user_type);
-  error = serialize (&m, app_ut->serialize_blob_contents, app_main, app_user);
+  error = serialize (&m, serialize_asn_app_user_blob_contents, app_main, au);
+  v = serialize_close_vector (&m);
   if (error)
     goto done;
-  v = serialize_close_vector (&m);
 
   {
     u8 * blob_name;
@@ -1586,9 +1621,11 @@ asn_app_user_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n
   asn_user_t * au;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   void * app_user;
-  asn_app_user_type_t * ut;
+  asn_user_type_t * ut;
+  asn_app_user_type_t * app_ut;
   serialize_main_t m;
   u32 is_new_user;
+  char * type_name = 0;
 
   au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
 
@@ -1599,39 +1636,45 @@ asn_app_user_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n
   serialize_open_data (&m, asn_pdu_contents_for_blob (blob), asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
 
   /* User type from blob. */
-  {
-    asn_app_user_type_enum_t t = unserialize_likely_small_unsigned_integer (&m);
+  unserialize_cstring (&m, &type_name);
+  ut = asn_user_type_by_name (type_name);
+  if (! ut)
+    {
+      error = clib_error_return (0, "unknown user type named `%s'", type_name);
+      goto done;
+    }
+  app_ut = CONTAINER_OF (ut, asn_app_user_type_t, user_type);
 
-    if (t >= ARRAY_LEN (app_main->user_types))
-      {
-        error = clib_error_return (0, "unknown user type 0x%x", t);
-        goto done;
-      }
-    ut = app_main->user_types + t;
-  }
+  if (au && au->user_type_index != ut->index)
+    {
+      error = clib_error_return (0, "conflicting user types owner `%U' blob `%s'",
+                                 format_asn_user_type, au->user_type_index,
+                                 type_name);
+      goto done;
+    }
 
   /* Create user from blob owner. */
   is_new_user = ! au;
   if (is_new_user)
-    {
-      asn_crypto_public_keys_t pk;
-      /* FIXME fetch auth key. */
-      memset (&pk, 0, sizeof (pk));
-      memcpy (pk.encrypt_key, blob->owner, sizeof (pk.encrypt_key));
-      au = asn_new_user_with_type (am, ASN_TX, ut->user_type.index,
-                                   /* with_public_keys */ &pk,
-                                   /* with_private_keys */ 0,
-                                   /* with_random_private_keys */ 0);
-    }
+    au = asn_new_user_with_type (am, ASN_TX, ut->index,
+                                 /* with_public_keys */ 0,
+                                 /* with_private_keys */ 0,
+                                 /* with_random_private_keys */ 0);
 
-  app_user = (void *) au - ut->user_type.user_type_offset_of_asn_user;
-  error = unserialize (&m, ut->unserialize_blob_contents, app_main, app_user);
+  app_user = (void *) au - ut->user_type_offset_of_asn_user;
+  error = unserialize (&m, app_ut->unserialize_blob_contents, app_main, app_user);
   serialize_close (&m);
 
-  if (! error && ut->did_update_user)
-    ut->did_update_user (au, is_new_user);
+  if (is_new_user)
+    asn_user_update_keys (am, ASN_TX, au, &au->crypto_keys.public,
+                          /* with_private_keys */ 0,
+                          /* with_random_private_keys */ 0);
+
+  if (! error && app_ut->did_update_user)
+    app_ut->did_update_user (au, is_new_user);
 
  done:
+  vec_free (type_name);
   return error;
 }
 
@@ -2518,51 +2561,15 @@ asn_app_event_update_subscribers (asn_main_t * am,
   *hp = h;
 }
 
-typedef struct {
-  u8 place_public_encrypt_key[crypto_box_public_key_bytes];
-  u8 place_public_auth_key[crypto_sign_public_key_bytes];
-  u8 place_private_encrypt_key[crypto_box_private_key_bytes];
-  u8 place_private_auth_key[crypto_sign_private_key_bytes];
-  asn_app_location_t location;
-} asn_app_place_state_t;
-
-static void serialize_asn_app_place_state (serialize_main_t * m, va_list * va)
-{
-  asn_app_place_state_t * p = va_arg (*va, asn_app_place_state_t *);
-  serialize_data (m, p->place_public_encrypt_key, sizeof (p->place_public_encrypt_key));
-  serialize_data (m, p->place_public_auth_key, sizeof (p->place_public_auth_key));
-  serialize_data (m, p->place_private_encrypt_key, sizeof (p->place_private_encrypt_key));
-  serialize_data (m, p->place_private_auth_key, sizeof (p->place_private_auth_key));
-  serialize (m, serialize_asn_app_location, &p->location);
-}
-
-static void unserialize_asn_app_place_state (serialize_main_t * m, va_list * va)
-{
-  asn_app_place_state_t * p = va_arg (*va, asn_app_place_state_t *);
-
-  memset (p, 0, sizeof (p[0]));
-  unserialize_data (m, p->place_public_encrypt_key, sizeof (p->place_public_encrypt_key));
-  unserialize_data (m, p->place_public_auth_key, sizeof (p->place_public_auth_key));
-  unserialize_data (m, p->place_private_encrypt_key, sizeof (p->place_private_encrypt_key));
-  unserialize_data (m, p->place_private_auth_key, sizeof (p->place_private_auth_key));
-  unserialize (m, unserialize_asn_app_location, &p->location);
-}
-
-typedef struct {
-  asn_exec_ack_handler_t ack_handler;
-  asn_app_location_t location;
-} learn_existing_place_exec_ack_handler_t;
-
 static clib_error_t *
 learn_existing_place_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
+  asn_main_t * am = ah->asn_main;
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   clib_error_t * error = 0;
-  learn_existing_place_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_existing_place_exec_ack_handler_t, ack_handler);
-  asn_app_place_state_t ps;
-  asn_app_user_check_in_at_place_t * check_ins = 0;
+  asn_user_t * place_au = 0;
+  asn_app_place_t * place = 0;
   serialize_main_t m;
-
-  memset (&ps, 0, sizeof (ps));
 
   unserialize_open_data (&m, ack->data, n_bytes_ack_data);
 
@@ -2570,73 +2577,52 @@ learn_existing_place_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_
   if (ack->status != ASN_ACK_PDU_STATUS_success || n_bytes_ack_data == 0)
     goto done;
 
-  error = unserialize (&m, unserialize_asn_app_place_state, &ps);
+  place_au = asn_new_user_with_type (am, ASN_TX,
+                                     app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index,
+                                     /* with_public_keys */ 0,
+                                     /* with_private_keys */ 0,
+                                     /* with_random_private_keys */ 0);
+  place = CONTAINER_OF (place_au, asn_app_place_t, gen_user.asn_user);
+
+  error = unserialize (&m, unserialize_asn_app_profile_for_place, app_main, place);
   if (error)
     goto done;
+
+  asn_user_update_keys (am, ASN_TX, place_au,
+                        /* with_public_keys */ &place_au->crypto_keys.public,
+                        /* with_private_keys */ &place_au->crypto_keys.private,
+                        /* with_random_private_keys */ 0);
+
   while (! unserialize_is_end_of_stream (&m))
     {
       asn_app_user_check_in_at_place_t * ci;
-      vec_add2 (check_ins, ci, 1);
+      vec_add2 (place->recent_check_ins_at_place, ci, 1);
       error = unserialize (&m, unserialize_asn_app_user_check_in_at_place, ci);
       if (error)
         goto done;
     }
   
-  {
-    asn_main_t * am = ah->asn_main;
-    asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
-    asn_user_t * au;
-    asn_app_place_t * p;
-
-    au = asn_user_with_encrypt_key (am, ASN_TX, ps.place_public_encrypt_key);
-    if (! au)
-      {
-        asn_crypto_public_keys_t pk;
-        asn_crypto_private_keys_t vk;
-        memset (&pk, 0, sizeof (pk));
-        memcpy (pk.encrypt_key, ps.place_public_encrypt_key, sizeof (pk.encrypt_key));
-        memcpy (pk.auth_key, ps.place_public_auth_key, sizeof (pk.auth_key));
-        memset (&vk, 0, sizeof (vk));
-        memcpy (vk.encrypt_key, ps.place_private_encrypt_key, sizeof (vk.encrypt_key));
-        memcpy (vk.auth_key, ps.place_private_auth_key, sizeof (vk.auth_key));
-        au = asn_new_user_with_type (am, ASN_TX,
-                                     app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index,
-                                     /* with_public_keys */ &pk,
-                                     /* with_private_keys */ &vk,
-                                     /* with_random_private_keys */ 0);
-      }
-
-    p = CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user);
-    asn_app_place_free (p, /* free_gen_user */ 0);
-    p->location = ps.location;
-    p->recent_check_ins_at_place = check_ins;
-  }
-
  done:
   unserialize_close (&m);
-  asn_app_location_free (&lah->location);
+  if (error)
+    {
+      if (place_au)
+        asn_user_del (place_au);
+    }
   return error;
 }
 
 clib_error_t * asn_app_find_existing_place_with_location (asn_app_main_t * am, asn_app_location_t * location)
 {
   clib_error_t * error = 0;
-  learn_existing_place_exec_ack_handler_t * ah;
 
   if (asn_app_place_with_unique_id (am, location->unique_id))
     goto done;
 
-  ah = asn_exec_ack_handler_create_with_function_in_container
-    (learn_existing_place_exec_ack_handler,
-     sizeof (ah[0]),
-     STRUCT_OFFSET_OF (learn_existing_place_exec_ack_handler_t, ack_handler));
-
-  asn_app_location_dup (&ah->location, location);
-
-  error = asn_socket_exec_with_ack_handler
+  error = asn_socket_exec
     (&am->asn_main, /* all sockets */ 0,
-     &ah->ack_handler,
-     "cat%c~(id_%v)/place%c~(id_%v)/checkins/*",
+     learn_existing_place_exec_ack_handler,
+     "cat%c~(id_%v)/asn_app_user%c~(id_%v)/checkins/*",
      0,
      location->unique_id, 0,
      location->unique_id);
@@ -2689,6 +2675,7 @@ create_place_for_check_in_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_
 {
   clib_error_t * error = 0;
   asn_main_t * am = asn_ah->asn_main;
+  asn_socket_t * as = asn_ah->asn_socket;
   create_place_for_check_in_ack_handler_t * ah = CONTAINER_OF (asn_ah, create_place_for_check_in_ack_handler_t, ack_handler);
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   struct {
@@ -2698,10 +2685,9 @@ create_place_for_check_in_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_
     u8 public_auth_key[crypto_sign_public_key_bytes];
   } * keys = (void *) ack->data;
   asn_crypto_keys_t ck;
-  asn_user_t * au;
+  asn_user_t * place_au;
   asn_app_place_t * place;
   asn_app_user_t * self_user = asn_app_user_with_index (app_main, am->self_user_ref.user_index);
-  asn_user_t * self_au = &self_user->gen_user.asn_user;
   asn_user_type_t * ut = &app_main->user_types[ASN_APP_USER_TYPE_place].user_type;
 
   memcpy (ck.private.encrypt_key, keys->private_encrypt_key, sizeof (ck.private.encrypt_key));
@@ -2709,18 +2695,18 @@ create_place_for_check_in_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_
   memcpy (ck.public.encrypt_key, keys->public_encrypt_key, sizeof (ck.public.encrypt_key));
   memcpy (ck.public.auth_key, keys->public_auth_key, sizeof (ck.public.auth_key));
 
-  au = asn_new_user_with_type (am, ASN_TX, ut->index,
-                               /* with_public_keys */ &ck.public,
-                               /* with_private_keys */ &ck.private,
-                               /* with_random_private_keys */ 0);
+  place_au = asn_new_user_with_type (am, ASN_TX, ut->index,
+                                     /* with_public_keys */ &ck.public,
+                                     /* with_private_keys */ &ck.private,
+                                     /* with_random_private_keys */ 0);
 
   if (am->verbose)
     clib_warning ("new place unique id %v, user-keys %U %U",
                   ah->location.unique_id,
-		  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
-		  format_hex_bytes, au->crypto_keys.public.auth_key, 8);
+		  format_hex_bytes, place_au->crypto_keys.public.encrypt_key, 8,
+		  format_hex_bytes, place_au->crypto_keys.public.auth_key, 8);
 
-  place = CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user);
+  place = CONTAINER_OF (place_au, asn_app_place_t, gen_user.asn_user);
   place->location = ah->location;
   memset (&ah->location, 0, sizeof (ah->location)); /* poison */
 
@@ -2728,27 +2714,16 @@ create_place_for_check_in_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_pdu_
   if (error)
     goto done;
 
-  error = asn_save_blob_with_contents (am, /* socket */ 0, self_au, /* blob_contents */ 0,
+  error = asn_save_blob_with_contents (am, as, place_au, /* blob_contents */ 0,
                                        "id_%v", place->location.unique_id);
   if (error)
     goto done;
 
-  {
-    asn_app_place_state_t ps;
-
-    memset (&ps, 0, sizeof (ps));
-    memcpy (ps.place_public_encrypt_key, keys->public_encrypt_key, sizeof (ps.place_public_encrypt_key));
-    memcpy (ps.place_public_auth_key, keys->public_auth_key, sizeof (ps.place_public_auth_key));
-    memcpy (ps.place_private_encrypt_key, keys->private_encrypt_key, sizeof (ps.place_private_encrypt_key));
-    memcpy (ps.place_private_auth_key, keys->private_auth_key, sizeof (ps.place_private_auth_key));
-    ps.location = place->location;
-
-    error = asn_save_serialized_blob (am, /* sockets */ 0, self_au,
-                                      "place",
-                                      serialize_asn_app_place_state, &ps);
-    if (error)
-      goto done;
-  }
+  error = asn_save_serialized_blob (am, as, place_au,
+                                    asn_app_user_blob_name,
+                                    serialize_asn_app_user_blob_contents, app_main, place_au);
+  if (error)
+    goto done;
 
  done:
   vec_free (ah->check_in_message);
@@ -2780,21 +2755,102 @@ clib_error_t * asn_app_check_in_at_location (asn_app_main_t * am, asn_app_locati
   return error;
 }
 
+static uword add_check_in (asn_app_main_t * app_main, asn_user_t * owner_au, asn_app_user_check_in_at_place_t * ci_add)
+{
+  asn_app_user_check_in_at_place_t * ci, ** ci_vec = 0;
+  uword duplicate_check_in = 0;
+
+  if (owner_au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_user].user_type.index)
+    {
+      asn_app_user_t * user = CONTAINER_OF (owner_au, asn_app_user_t, gen_user.asn_user);
+      ci_vec = &user->check_ins;
+    }
+  else if (owner_au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index)
+    {
+      asn_app_place_t * place = CONTAINER_OF (owner_au, asn_app_place_t, gen_user.asn_user);
+      ci_vec = &place->recent_check_ins_at_place;
+    }
+  else
+    /* can't happen due to (*) above */
+    ASSERT (0);
+
+  vec_foreach (ci, *ci_vec)
+    {
+      duplicate_check_in = (ci_add->time_stamp_in_nsec_from_1970 == ci->time_stamp_in_nsec_from_1970
+                            && ! memcmp (ci_add->user_key.data, ci->user_key.data, sizeof (ci_add->user_key.data)));
+      if (duplicate_check_in)
+        break;
+    }
+
+  if (! duplicate_check_in)
+    {
+      asn_app_user_type_t * app_ut = asn_app_user_type_for_user (owner_au);
+
+      vec_add1 (*ci_vec, ci_add[0]);
+
+      if (app_ut->did_update_user)
+        app_ut->did_update_user (owner_au, /* is_new_user */ 0);
+    }
+
+  return duplicate_check_in;
+}
+
+typedef struct {
+  asn_exec_ack_handler_t ack_handler;
+  asn_user_ref_t owner_user_ref;
+  asn_app_user_check_in_at_place_t check_in_to_add;
+} learn_user_for_check_in_exec_ack_handler_t;
+
+static clib_error_t *
+learn_user_for_check_in_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+{
+  clib_error_t * error = 0;
+  asn_main_t * am = ah->asn_main;
+  asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
+  learn_user_for_check_in_exec_ack_handler_t * lah
+    = CONTAINER_OF (ah, learn_user_for_check_in_exec_ack_handler_t, ack_handler);
+  asn_user_ref_t learned_user_ref;
+  asn_user_t * owner_au;
+  uword duplicate_check_in;
+
+  error = asn_learn_user_from_ack (ah->asn_main, ack, n_bytes_ack_data, lah->check_in_to_add.user_key.data,
+                                   &learned_user_ref);
+  if (error)
+    goto done;
+
+  {
+    asn_user_type_t * ut = pool_elt (asn_user_type_pool, learned_user_ref.type_index);
+    asn_user_t * learned_au = asn_user_by_ref (&learned_user_ref);
+    if (ut->did_learn_new_user)
+      ut->did_learn_new_user (learned_au, /* is_place */ 0);
+  }
+
+  owner_au = asn_user_by_ref (&lah->owner_user_ref);
+
+  duplicate_check_in = add_check_in (app_main, owner_au, &lah->check_in_to_add);
+  if (duplicate_check_in)
+    asn_app_user_check_in_at_place_free (&lah->check_in_to_add);
+
+ done:
+  return error;
+}
+
 static clib_error_t *
 asn_app_check_in_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu)
 {
   asn_main_t * am = bh->asn_main;
   asn_app_main_t * app_main = CONTAINER_OF (am, asn_app_main_t, asn_main);
   clib_error_t * error = 0;
-  asn_app_user_check_in_at_place_t ci_add, ** ci_vec;
-  asn_user_t * au;
+  asn_app_user_check_in_at_place_t ci_add;
+  asn_user_t * owner_au, * ci_au;
+  uword duplicate_check_in = 0;
 
   memset (&ci_add, 0, sizeof (ci_add));
 
-  au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
-  if (! au)
+  owner_au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
+  if (! owner_au)
     {
-      error = clib_error_return (0, "unknown user with key %U", format_asn_user_key, blob->owner);
+      error = clib_error_return (0, "unknown user with key %U", format_hex_bytes, blob->owner, sizeof (blob->owner));
       goto done;
     }
 
@@ -2803,43 +2859,38 @@ asn_app_check_in_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t * blob, u
   if (error)
     goto done;
 
-  if (au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_user].user_type.index)
+  /* (*) See below. */
+  if (! (owner_au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_user].user_type.index
+         || owner_au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index))
     {
-      asn_app_user_t * user = CONTAINER_OF (au, asn_app_user_t, gen_user.asn_user);
-      ci_vec = &user->check_ins;
-    }
-  else if (au->user_type_index == app_main->user_types[ASN_APP_USER_TYPE_place].user_type.index)
-    {
-      asn_app_place_t * place = CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user);
-      ci_vec = &place->recent_check_ins_at_place;
-    }
-  else
-    {
-      error = clib_error_return (0, "unexpected user type %U", format_asn_user_type, au->user_type_index);
+      error = clib_error_return (0, "unexpected user type %U", format_asn_user_type, owner_au->user_type_index);
       goto done;
     }
 
-  {
-    asn_app_user_check_in_at_place_t * ci;
-    uword found_it = 0;
-    vec_foreach (ci, *ci_vec)
-      {
-        found_it = (ci_add.time_stamp_in_nsec_from_1970 == ci->time_stamp_in_nsec_from_1970
-                    && ! memcmp (ci_add.user_key.data, ci->user_key.data, sizeof (ci_add.user_key.data)));
-        if (found_it) break;
-      }
-    if (! found_it)
-      vec_add1 (*ci_vec, ci_add);
-  }
+  duplicate_check_in = 0;
 
-  {
-    asn_app_user_type_t * app_ut = asn_app_user_type_for_user (au);
-    if (app_ut->did_update_user)
-      app_ut->did_update_user (au, /* is_new_user */ 0);
-  }
+  ci_au = asn_user_with_encrypt_key (am, ASN_TX, ci_add.user_key.data);
+  if (! ci_au)
+    {
+      learn_user_for_check_in_exec_ack_handler_t * ah
+        = asn_exec_ack_handler_create_with_function_in_container
+        (learn_user_for_check_in_exec_ack_handler,
+         sizeof (learn_user_for_check_in_exec_ack_handler_t),
+         STRUCT_OFFSET_OF (learn_user_for_check_in_exec_ack_handler_t, ack_handler));
+
+      ah->check_in_to_add = ci_add;
+      ah->owner_user_ref.user_index = owner_au->index;
+      ah->owner_user_ref.type_index = owner_au->user_type_index;
+
+      error = asn_socket_exec_with_ack_handler
+        (am, bh->asn_socket,
+         &ah->ack_handler, "%U", format_asn_learn_user_exec_command, ci_add.user_key.data, sizeof (ci_add.user_key.data));
+    }
+  else
+    duplicate_check_in = add_check_in (app_main, owner_au, &ci_add);
 
  done:
-  if (error)
+  if (error || duplicate_check_in)
     asn_app_user_check_in_at_place_free (&ci_add);
   return error;
 }

@@ -431,6 +431,12 @@ asn_user_alloc_with_type (asn_user_type_t * ut)
   return au;
 }
 
+always_inline void
+asn_user_del (asn_user_t * au)
+{
+  ASSERT (0);
+}
+
 always_inline uword
 asn_user_is_owned_by_self (asn_user_t * au)
 { return au->private_key_is_valid; }
@@ -711,6 +717,8 @@ serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;
 serialize_function_t serialize_asn_position_on_earth, unserialize_asn_position_on_earth;
+serialize_function_t serialize_asn_public_keys, unserialize_asn_public_keys;
+serialize_function_t serialize_asn_private_keys, unserialize_asn_private_keys;
 
 #define asn_foreach_user_with_type(VAR,T,BODY)                          \
 do {                                                                    \

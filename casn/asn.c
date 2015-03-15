@@ -306,6 +306,34 @@ void asn_user_update_keys (asn_main_t * am,
   asn_user_hash_by_public_key (am, ASN_TX, au);
 }
 
+void serialize_asn_public_keys (serialize_main_t * m, va_list * va)
+{
+  asn_crypto_public_keys_t * pk = va_arg (*va, asn_crypto_public_keys_t *);
+  serialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
+  serialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+}
+
+void unserialize_asn_public_keys (serialize_main_t * m, va_list * va)
+{
+  asn_crypto_public_keys_t * pk = va_arg (*va, asn_crypto_public_keys_t *);
+  unserialize_data (m, &pk->encrypt_key, sizeof (pk->encrypt_key));
+  unserialize_data (m, &pk->auth_key, sizeof (pk->auth_key));
+}
+
+void serialize_asn_private_keys (serialize_main_t * m, va_list * va)
+{
+  asn_crypto_private_keys_t * pk = va_arg (*va, asn_crypto_private_keys_t *);
+  serialize_data (m, pk->encrypt_key, sizeof (pk->encrypt_key));
+  serialize_data (m, pk->auth_key, sizeof (pk->auth_key));
+}
+
+void unserialize_asn_private_keys (serialize_main_t * m, va_list * va)
+{
+  asn_crypto_private_keys_t * pk = va_arg (*va, asn_crypto_private_keys_t *);
+  unserialize_data (m, &pk->encrypt_key, sizeof (pk->encrypt_key));
+  unserialize_data (m, &pk->auth_key, sizeof (pk->auth_key));
+}
+
 asn_user_t *
 asn_new_user_with_type (asn_main_t * am,
 			asn_rx_or_tx_t rt,
@@ -1277,6 +1305,9 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
   asn_user_type_t * ut = pool_elt (asn_user_type_pool, nah->user_type_index);
   asn_user_t * au;
 
+  if (ack->status != ASN_ACK_PDU_STATUS_success)
+    return 0;
+
   ASSERT (n_bytes_ack_data == sizeof (keys[0]));
 
   memcpy (ck.private.encrypt_key, keys->private_encrypt_key, sizeof (ck.private.encrypt_key));
@@ -1368,8 +1399,8 @@ asn_set_blob_handler_for_name_helper (asn_main_t * am,
 
   bh->name = va_format (0, fmt, va);
 
-  e = vec_end (bh->name);
   /* PATH / * matches all blobs in directory PATH. */
+  e = vec_end (bh->name);
   if (vec_len (bh->name) > 2 && e[-2] == '/' && e[-1] == '*')
     {
       if (! am->blob_handler_index_by_directory_name)
@@ -1466,14 +1497,17 @@ asn_unserialize_blob_contents (asn_main_t * am, asn_pdu_blob_t * blob, u32 n_byt
   clib_error_t * error;
   va_list va;
   serialize_main_t m;
+
   serialize_open_data (&m,
                        asn_pdu_contents_for_blob (blob),
                        asn_pdu_n_content_bytes_for_blob (blob, n_bytes_in_pdu));
+
   va_start (va, n_bytes_in_pdu);
   error = va_unserialize (&m, &va);
   va_end (va);
 
   serialize_close (&m);
+
   return error;
 }
 
