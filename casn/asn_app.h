@@ -432,6 +432,14 @@ asn_app_place_with_key (asn_app_main_t * am, u8 * encrypt_key)
   return au ? CONTAINER_OF (au, asn_app_place_t, gen_user.asn_user) : 0;
 }
 
+always_inline void
+asn_app_place_set_unique_id (asn_app_main_t * am, asn_app_place_t * p)
+{
+  if (! am->place_index_by_unique_id)
+        am->place_index_by_unique_id = hash_create_vec (0, sizeof (p->location.unique_id[0]), sizeof (uword));
+  hash_set_mem (am->place_index_by_unique_id, p->location.unique_id, p->gen_user.asn_user.index);
+}
+
 always_inline void *
 asn_app_new_user_with_type (asn_app_main_t * am, asn_app_user_type_enum_t t)
 {
