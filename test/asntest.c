@@ -49,6 +49,12 @@ static clib_error_t * unnamed_blob_handler (asn_blob_handler_t * bh, asn_pdu_blo
   return 0;
 }
 
+asn_blob_type_t asn_unnamed_blob_type = {
+  .path = "",
+  .handler = unnamed_blob_handler,
+};
+CLIB_INIT_ADD (asn_blob_type_t, asn_unnamed_blob_type);
+
 int test_asn_main (unformat_input_t * input)
 {
   test_asn_main_t _tm, * tm = &_tm;
@@ -181,9 +187,6 @@ int test_asn_main (unformat_input_t * input)
                                    /* with_random_private_keys */ 0);
       am->self_user_ref.user_index = au->index;
     }
-
-  /* Unnamed "message" blobs. */
-  asn_set_blob_handler_for_name (am, unnamed_blob_handler, /* type */ 0, "");
 
   {
     int i;

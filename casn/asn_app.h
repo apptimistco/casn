@@ -249,9 +249,27 @@ typedef struct {
   asn_app_user_check_in_at_place_t * check_ins;
 } asn_app_user_t;
 
+always_inline uword
+asn_app_user_check_in_at_place_vector_is_sorted (asn_app_user_check_in_at_place_t * cis)
+{
+  uword i, is_sorted = 1;
+  if (vec_len (cis) >= 2)
+    {
+      for (i = 0; i < vec_len (cis) - 1; i++)
+        {
+          is_sorted &= cis[i].time_stamp_in_nsec_from_1970 < cis[i+1].time_stamp_in_nsec_from_1970;
+          ASSERT (is_sorted);
+        }
+    }
+  return is_sorted;
+}
+
 always_inline asn_app_user_check_in_at_place_t *
 asn_app_last_check_in_location_for_user (asn_app_user_t * au)
-{ return au->check_ins ? vec_end (au->check_ins) - 1 : 0; }
+{
+  ASSERT (asn_app_user_check_in_at_place_vector_is_sorted (au->check_ins));
+  return au->check_ins ? vec_end (au->check_ins) - 1 : 0;
+}
 
 always_inline void asn_app_user_free (asn_app_user_t * u)
 {
@@ -319,20 +337,6 @@ typedef struct {
   uword * attribute_by_name;
 } asn_app_attribute_main_t;
 
-#define foreach_asn_app_subscribers_blob_type           \
-  _ (asn_subscribers, "asn/subscribers")                \
-  _ (event_users_invited, "event_users_invited")        \
-  _ (event_groups_invited, "event_groups_invited")      \
-  _ (event_users_rsvpd, "event_users_rsvpd")            \
-  _ (user_friends, "user_friends")                      \
-  _ (user_events_rsvpd, "user_events_rsvpd")
-
-typedef enum {
-#define _(a,b) ASN_APP_SUBSCRIBERS_BLOB_TYPE_##a,
-  foreach_asn_app_subscribers_blob_type
-#undef _
-} asn_app_subscribers_blob_type_t;
-
 typedef struct {
   asn_user_type_t user_type;
 
@@ -346,9 +350,11 @@ typedef struct {
 
   void (* did_receive_message) (asn_user_t * au, asn_app_message_header_t * msg);
 
-  void (* update_subscribers) (asn_main_t * am, asn_user_t * au,
-                               asn_app_subscribers_blob_type_t blob_type,
-                               asn_user_ref_t * subcriber_user_refs, u32 n_subscriber_user_refs);
+  void (* update_subscribers) (asn_main_t * am,
+                               asn_user_t * au,
+                               asn_blob_type_t * blob_type,
+                               asn_user_ref_t * subcriber_user_refs,
+                               u32 n_subscriber_user_refs);
 } asn_app_user_type_t;
 
 always_inline asn_app_user_type_t *
@@ -497,6 +503,10 @@ u8 * asn_app_get_oneof_attribute (asn_app_attribute_main_t * am, u32 ai, u32 ui)
 uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_main_t * am, u32 ai, u32 ui, uword * r);
 
 clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
+
+asn_blob_type_t asn_app_messages_blob_type, asn_app_user_blob_type, asn_app_subscribers_blob_type,
+  asn_app_user_friends_blob_type, asn_app_events_rsvpd_for_user_blob_type, asn_app_event_users_invited_blob_type,
+  asn_app_event_groups_invited_blob_type, asn_app_event_users_rsvpd_blob_type, asn_app_check_in_blob_type;
 
 serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
 

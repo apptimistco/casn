@@ -538,12 +538,55 @@ typedef clib_error_t * (asn_blob_handler_function_t) (struct asn_blob_handler_t 
                                                       asn_pdu_blob_t * blob,
                                                       u32 n_bytes_in_pdu);
 
+typedef struct {
+  u32 index;
+  u8 * name;                    /* formatted name as vector for hash lookup. */
+  char * path;                  /* path to initialize. */
+  asn_blob_handler_function_t * handler;
+  /* Time stamp of most recent blob of this type per user type and user index.
+     most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[user_type][user_index]; */
+  u64 ** most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index;
+} asn_blob_type_t;
+CLIB_INIT_ADD_TYPE (asn_blob_type_t);
+
+always_inline void
+asn_blob_type_free (asn_blob_type_t * t)
+{
+  uword i;
+  vec_free (t->name);
+  vec_foreach_index (i, t->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index)
+    vec_free (t->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[i]);
+  vec_free (t->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index);
+}
+
+always_inline u64
+asn_user_blob_most_recent_time_stamp (asn_user_t * au, asn_blob_type_t * bt)
+{
+  u64 ts = 0;
+  if (au->user_type_index < vec_len (bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index))
+    {
+      u64 * a = bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[au->user_type_index];
+      ts = au->index < vec_len (a) ? a[au->index] : ts;
+    }
+  return ts;
+}
+
+always_inline void
+asn_user_blob_update_most_recent_time_stamp (asn_user_t * au, asn_blob_type_t * bt, u64 new_ts)
+{
+  uword ti = au->user_type_index, ui = au->index;
+  u64 old_ts;
+  vec_validate (bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index, ti);
+  vec_validate (bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[ti], ui);
+  old_ts = bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[ti][ui];
+  bt->most_recent_time_stamp_in_nsec_from_1970_for_user_type_and_index[ti][ui]
+    = new_ts > old_ts ? new_ts : old_ts;
+}
+
 typedef struct asn_blob_handler_t {
   struct asn_main_t * asn_main;
   struct asn_socket_t * asn_socket;
-  asn_blob_handler_function_t * handler_function;
-  u8 * name;
-  uword blob_type;
+  asn_blob_type_t * blob_type;
 } asn_blob_handler_t;
 
 typedef enum {
@@ -596,17 +639,14 @@ typedef struct asn_main_t {
   /* Index and user type of self user. */
   asn_user_ref_t self_user_ref;
 
-  /* Last received time stamp from ack. */
-  u64 last_rx_ack_time_stamp_in_nsec_from_1970;
-
   uword * user_ref_by_public_encrypt_key[ASN_N_RX_TX];
   uword * user_ref_by_public_encrypt_key_first_7_bytes[ASN_N_RX_TX];
   uword * user_ref_by_public_encrypt_key_first_8_bytes[ASN_N_RX_TX];
 
-  asn_blob_handler_t * blob_handlers;
+  asn_blob_type_t ** blob_types;
 
-  uword * blob_handler_index_by_name;
-  uword * blob_handler_index_by_directory_name;
+  uword * blob_type_index_by_name;
+  uword * blob_type_index_by_directory_name;
 } asn_main_t;
 
 always_inline asn_socket_t *
@@ -705,8 +745,17 @@ void asn_user_type_free (asn_user_type_t * t);
 clib_error_t * asn_socket_exec_with_ack_handler (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_t * ack_handler, char * fmt, ...);
 clib_error_t * asn_socket_exec (asn_main_t * am, asn_socket_t * as, asn_exec_ack_handler_function_t * function, char * fmt, ...);
 
-void asn_set_blob_handler_for_name_with_type (asn_main_t * am, asn_blob_handler_function_t * handler, uword type, char * fmt, ...);
-void asn_set_blob_handler_for_name (asn_main_t * am, asn_blob_handler_function_t * handler, char * fmt, ...);
+always_inline clib_error_t *
+asn_fetch_user_blob (asn_main_t * am, asn_socket_t * as, asn_user_t * au, asn_blob_type_t * bt)
+{
+  u64 since_time_stamp = asn_user_blob_most_recent_time_stamp (au, bt);
+
+  return asn_socket_exec (am, as, 0, "fetch%c~%U/%s@0x%Lx",
+                           0,
+                           format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
+                           bt->path, since_time_stamp);
+}
+
 clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos);
@@ -760,5 +809,7 @@ clib_error_t *
 asn_save_serialized_blob (asn_main_t * am, asn_socket_t * as, asn_user_t * au, char * fmt, ...);
 clib_error_t *
 asn_unserialize_blob_contents (asn_main_t * am, asn_pdu_blob_t * blob, u32 n_bytes_in_pdu, ...);
+
+asn_blob_type_t asn_mark_blob_type;
 
 #endif /* included_asn_h */

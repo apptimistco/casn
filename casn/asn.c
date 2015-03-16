@@ -721,8 +721,6 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
   uword is_error = ack->status != ASN_ACK_PDU_STATUS_success;
   asn_pdu_id_t acked_pdu_id = ack->header.generic_request_id.id;
 
-  am->last_rx_ack_time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (ack->time_stamp_in_nsec_from_1970);
-
   switch (acked_pdu_id)
     {
     case ASN_PDU_login:
@@ -864,7 +862,7 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
 			uword n_bytes_in_pdu)
 {
   clib_error_t * error = 0;
-  asn_blob_handler_t * bh;
+  asn_blob_type_t * bt;
   uword * p;
   u8 * n;
 
@@ -872,7 +870,7 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
   if (blob->n_name_bytes > 0)
     vec_add (n, blob->name, blob->n_name_bytes);
 
-  p = hash_get_mem (am->blob_handler_index_by_name, n);
+  p = hash_get_mem (am->blob_type_index_by_name, n);
 
   if (! p && vec_len (n) > 1)
     {
@@ -883,7 +881,7 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
       if (last_slash > 0 && last_slash < l - 1)
         {
           _vec_len (n) = last_slash;
-          p = hash_get_mem (am->blob_handler_index_by_directory_name, n);
+          p = hash_get_mem (am->blob_type_index_by_directory_name, n);
           _vec_len (n) = l;
         }
     }
@@ -895,10 +893,12 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
     }
   else
     {
-      bh = vec_elt_at_index (am->blob_handlers, p[0]);
-      bh->asn_main = am;
-      bh->asn_socket = as;
-      error = bh->handler_function (bh, blob, n_bytes_in_pdu);
+      asn_blob_handler_t bh;
+      bt = vec_elt (am->blob_types, p[0]);
+      bh.asn_main = am;
+      bh.asn_socket = as;
+      bh.blob_type = bt;
+      error = bt->handler (&bh, blob, n_bytes_in_pdu);
     }
 
   vec_free (n);
@@ -936,33 +936,6 @@ static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
 
   return s;
 }
-
-#if 0
-asn_crypto_state_t *
-asn_crypto_state_for_message (asn_user_t * from_user, asn_user_t * to_user)
-{
-  asn_crypto_state_t * cs;
-
-  if (clib_bitmap_get (from_user->crypto_state_by_user_index_is_valid_bitmap, to_user->index))
-    return vec_elt_at_index (from_user->crypto_state_by_user_index, to_user->index);
-
-  vec_validate (from_user->crypto_state_by_user_index, to_user->index);
-  from_user->crypto_state_by_user_index_is_valid_bitmap
-    = clib_bitmap_ori (from_user->crypto_state_by_user_index_is_valid_bitmap, to_user->index);
-
-  cs = vec_elt_at_index (to_user->crypto_state_by_user_index, to_user->index);
-
-  /* Initialize shared secret and nonce to zero. */
-  memset (cs, 0, sizeof (cs[0]));
-
-  /* Must have key for sending user. */
-  ASSERT (from_user->private_key_is_valid);
-
-  crypto_box_beforenm (cs->shared_secret, to_user->crypto_keys.public.encrypt_key, from_user->crypto_keys.private.encrypt_key);
-
-  return cs;
-}
-#endif
 
 #define _(f)                                                            \
   static clib_error_t *                                                 \
@@ -1384,57 +1357,30 @@ clib_error_t * asn_socket_login_for_user (asn_main_t * am, asn_socket_t * as, as
 }
 
 static void
-asn_set_blob_handler_for_name_helper (asn_main_t * am,
-                                      asn_blob_handler_function_t * handler_function,
-                                      uword blob_type,
-                                      char * fmt, va_list * va)
+asn_register_blob_type (asn_main_t * am, asn_blob_type_t * bt)
 {
-  asn_blob_handler_t * bh;
   u8 * e;
 
-  vec_add2 (am->blob_handlers, bh, 1);
+  bt->index = vec_len (am->blob_types);
+  bt->name = format (0, "%s", bt->path);
 
-  bh->handler_function = handler_function;
-  bh->blob_type = blob_type;
-
-  bh->name = va_format (0, fmt, va);
+  vec_add1 (am->blob_types, bt);
 
   /* PATH / * matches all blobs in directory PATH. */
-  e = vec_end (bh->name);
-  if (vec_len (bh->name) > 2 && e[-2] == '/' && e[-1] == '*')
+  e = vec_end (bt->name);
+  if (vec_len (bt->name) > 2 && e[-2] == '/' && e[-1] == '*')
     {
-      if (! am->blob_handler_index_by_directory_name)
-        am->blob_handler_index_by_directory_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
-      _vec_len (bh->name) -= 2;
-      hash_set_mem (am->blob_handler_index_by_directory_name, bh->name, bh - am->blob_handlers);
+      if (! am->blob_type_index_by_directory_name)
+        am->blob_type_index_by_directory_name = hash_create_vec (0, sizeof (bt->name[0]), sizeof (uword));
+      _vec_len (bt->name) -= 2;
+      hash_set_mem (am->blob_type_index_by_directory_name, bt->name, bt->index);
     }
   else
     {
-      if (! am->blob_handler_index_by_name)
-        am->blob_handler_index_by_name = hash_create_vec (0, sizeof (bh->name[0]), sizeof (uword));
-      hash_set_mem (am->blob_handler_index_by_name, bh->name, bh - am->blob_handlers);
+      if (! am->blob_type_index_by_name)
+        am->blob_type_index_by_name = hash_create_vec (0, sizeof (bt->name[0]), sizeof (uword));
+      hash_set_mem (am->blob_type_index_by_name, bt->name, bt->index);
     }
-}
-
-void asn_set_blob_handler_for_name (asn_main_t * am,
-                                    asn_blob_handler_function_t * handler_function,
-                                    char * fmt, ...)
-{
-  va_list va;
-  va_start (va, fmt);
-  asn_set_blob_handler_for_name_helper (am, handler_function, /* blob_type */ 0, fmt, &va);
-  va_end (va);
-}
-
-void asn_set_blob_handler_for_name_with_type (asn_main_t * am,
-                                              asn_blob_handler_function_t * handler_function,
-                                              uword blob_type,
-                                              char * fmt, ...)
-{
-  va_list va;
-  va_start (va, fmt);
-  asn_set_blob_handler_for_name_helper (am, handler_function, blob_type, fmt, &va);
-  va_end (va);
 }
 
 clib_error_t *
@@ -1635,16 +1581,17 @@ typedef struct {
   asn_exec_ack_handler_t ack_handler;
   u8 user_encrypt_key[crypto_box_public_key_bytes];
   asn_user_mark_response_t mark_response;
-} learn_user_from_auth_response_exec_ack_handler_t;
+  u64 time_stamp_in_nsec_from_1970;
+} learn_user_for_mark_exec_ack_handler_t;
 
 static clib_error_t *
-learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
+learn_user_for_mark_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * ack, u32 n_bytes_ack_data)
 {
   clib_error_t * error = 0;
   asn_user_t * au;
   asn_user_type_t * ut;
   asn_user_ref_t user_ref;
-  learn_user_from_auth_response_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_from_auth_response_exec_ack_handler_t, ack_handler);
+  learn_user_for_mark_exec_ack_handler_t * lah = CONTAINER_OF (ah, learn_user_for_mark_exec_ack_handler_t, ack_handler);
   asn_user_mark_response_t * mr = &lah->mark_response;
   uword is_place = asn_user_mark_response_is_place (mr);
 
@@ -1655,6 +1602,8 @@ learn_user_from_auth_response_ack (asn_exec_ack_handler_t * ah, asn_pdu_ack_t * 
 
   au = asn_user_by_ref (&user_ref);
   ut = pool_elt (asn_user_type_pool, user_ref.type_index);
+
+  asn_user_blob_update_most_recent_time_stamp (au, &asn_mark_blob_type, lah->time_stamp_in_nsec_from_1970);
 
   au->current_marks_are_valid |= 1 << is_place;
   au->current_marks[is_place] = mr[0];
@@ -1684,6 +1633,8 @@ static clib_error_t * mark_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t
       au->current_marks_are_valid |= 1 << is_place;
       au->current_marks[is_place] = r[0];
 
+      asn_user_blob_update_most_recent_time_stamp (au, bh->blob_type, clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970));
+
       ut = pool_elt (asn_user_type_pool, au->user_type_index);
 
       if (ut->user_mark_did_change)
@@ -1692,18 +1643,25 @@ static clib_error_t * mark_blob_handler (asn_blob_handler_t * bh, asn_pdu_blob_t
       return error;
     }
 
-  learn_user_from_auth_response_exec_ack_handler_t * lah = asn_exec_ack_handler_create_with_function_in_container
-    (learn_user_from_auth_response_ack,
-     sizeof (learn_user_from_auth_response_exec_ack_handler_t),
-     STRUCT_OFFSET_OF (learn_user_from_auth_response_exec_ack_handler_t, ack_handler));
+  learn_user_for_mark_exec_ack_handler_t * lah = asn_exec_ack_handler_create_with_function_in_container
+    (learn_user_for_mark_ack,
+     sizeof (learn_user_for_mark_exec_ack_handler_t),
+     STRUCT_OFFSET_OF (learn_user_for_mark_exec_ack_handler_t, ack_handler));
 
   memcpy (lah->user_encrypt_key, blob->owner, sizeof (lah->user_encrypt_key));
   lah->mark_response = r[0];
+  lah->time_stamp_in_nsec_from_1970 = clib_net_to_host_u64 (blob->time_stamp_in_nsec_from_1970);
 
   return asn_socket_exec_with_ack_handler
     (am, bh->asn_socket,
      &lah->ack_handler, "%U", format_asn_learn_user_exec_command, r->user, sizeof (r->user));
 }
+
+asn_blob_type_t asn_mark_blob_type = {
+  .path = "asn/mark",
+  .handler = mark_blob_handler,
+};
+CLIB_INIT_ADD (asn_blob_type_t, asn_mark_blob_type);
 
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos)
 { return asn_socket_exec (am, as, 0, "mark%c%.9f%c%.9f", 0, pos.longitude, 0, pos.latitude); }
@@ -1815,7 +1773,11 @@ clib_error_t * asn_main_init (asn_main_t * am, u32 user_socket_n_bytes, u32 user
 
   error = websocket_init (wsm);
 
-  asn_set_blob_handler_for_name (am, mark_blob_handler, "asn/mark");
+  if (! error)
+    {
+      asn_blob_type_t * bt;
+      foreach_clib_init_with_type (bt, asn_blob_type_t, asn_register_blob_type (am, bt));
+    }
 
   return error;
 }
@@ -1885,10 +1847,11 @@ void asn_main_free (asn_main_t * am)
   }
   {
     int i;
-    vec_foreach_index (i, am->blob_handlers)
-      vec_free (am->blob_handlers[i].name);
-    vec_free (am->blob_handlers);
-    hash_free (am->blob_handler_index_by_name);
+    vec_foreach_index (i, am->blob_types)
+      asn_blob_type_free (am->blob_types[i]);
+    vec_free (am->blob_types);
+    hash_free (am->blob_type_index_by_name);
+    hash_free (am->blob_type_index_by_directory_name);
   }
   {
     asn_client_socket_t * cs;
@@ -2013,12 +1976,10 @@ void serialize_asn_main (serialize_main_t * m, va_list * va)
 {
   asn_main_t * am = va_arg (*va, asn_main_t *);
   serialize_integer (m, am->self_user_ref.user_index, sizeof (u32));
-  serialize (m, serialize_64, am->last_rx_ack_time_stamp_in_nsec_from_1970);
 }
 
 void unserialize_asn_main (serialize_main_t * m, va_list * va)
 {
   asn_main_t * am = va_arg (*va, asn_main_t *);
   unserialize_integer (m, &am->self_user_ref.user_index, sizeof (u32));
-  unserialize (m, unserialize_64, &am->last_rx_ack_time_stamp_in_nsec_from_1970);
 }
