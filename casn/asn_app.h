@@ -514,7 +514,7 @@ clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user
 
 asn_blob_type_t asn_app_messages_blob_type, asn_app_user_blob_type, asn_app_subscribers_blob_type,
   asn_app_user_friends_blob_type, asn_app_events_rsvpd_for_user_blob_type, asn_app_event_users_invited_blob_type,
-  asn_app_event_groups_invited_blob_type, asn_app_event_users_rsvpd_blob_type, asn_app_check_in_blob_type;
+  asn_app_event_groups_invited_blob_type, asn_app_users_rsvpd_for_event_blob_type, asn_app_check_in_blob_type;
 
 serialize_function_t serialize_asn_app_main, unserialize_asn_app_main;
 

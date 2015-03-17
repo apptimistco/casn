@@ -2550,11 +2550,11 @@ asn_blob_type_t asn_app_event_groups_invited_blob_type = {
 };
 CLIB_INIT_ADD (asn_blob_type_t, asn_app_event_groups_invited_blob_type);
 
-asn_blob_type_t asn_app_event_users_rsvpd_blob_type = {
+asn_blob_type_t asn_app_users_rsvpd_for_event_blob_type = {
   .path = "event_users_rsvpd",
   .handler = asn_app_subscribers_blob_handler,
 };
-CLIB_INIT_ADD (asn_blob_type_t, asn_app_event_users_rsvpd_blob_type);
+CLIB_INIT_ADD (asn_blob_type_t, asn_app_users_rsvpd_for_event_blob_type);
 
 static void
 asn_app_event_update_subscribers (asn_main_t * am,
@@ -2576,7 +2576,7 @@ asn_app_event_update_subscribers (asn_main_t * am,
       hp = &e->groups_invited_to_event;
       expected_user_type = &app_main->user_types[ASN_APP_USER_TYPE_user_group].user_type;
     }
-  else if (blob_type->index == asn_app_event_users_rsvpd_blob_type.index)
+  else if (blob_type->index == asn_app_users_rsvpd_for_event_blob_type.index)
     hp = &e->users_rsvpd_for_event;
   else
     {
