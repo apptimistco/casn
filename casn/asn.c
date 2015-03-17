@@ -554,12 +554,16 @@ static u8 * format_asn_exec_command (u8 * s, va_list * va)
   u8 * e = vec_end (cmd);
   u8 * q;
   u32 i = 0;
+  uword indent = format_get_indent (s);
 
   while (p < e)
     {
       /* Null null => end of string. */
       if (p[0] == 0)
-        break;
+        {
+          p++;
+          break;
+        }
 
       for (q = p; q < e && *q; q++)
         ;
@@ -569,6 +573,12 @@ static u8 * format_asn_exec_command (u8 * s, va_list * va)
 
       i++;
     }
+
+  if (e > p)
+    s = format (s, "\n%Ucontents: %U%s",
+                format_white_space, indent,
+                format_hex_bytes, p, clib_min (e - p, 256),
+                e - p > 256 ? "..." : "");
 
   return s;
 }
@@ -764,14 +774,6 @@ asn_socket_rx_ack_pdu (asn_main_t * am,
             {
               asn_position_on_earth_t pos = asn_user_mark_response_position (&au->current_marks[is_place]);
               asn_mark_position (am, as, pos);
-            }
-
-          /* Query marks for other users. */
-          if (asn_is_user_for_ref (au, &am->self_user_ref))
-            {
-              error = asn_socket_exec (am, as, 0, "fetch%c~./asn/mark", 0);
-              if (error)
-                goto done;
             }
         }
       break;

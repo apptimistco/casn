@@ -1726,6 +1726,8 @@ static void handle_subscribers (asn_main_t * am, asn_app_users_lookup_t * lu)
       vec_add1 (urs, r);
     }
 
+  asn_user_blob_update_most_recent_time_stamp (owner, lu->blob_type, lu->blob_time_stamp);
+
   app_ut->update_subscribers (am, owner, lu->blob_type, urs, vec_len (urs));
 
   if (app_ut->did_update_user)
@@ -1778,8 +1780,6 @@ learn_user_for_subscribers_exec_ack_handler (asn_exec_ack_handler_t * ah, asn_pd
 
   au = asn_user_by_ref (&user_ref);
   ut = pool_elt (asn_user_type_pool, user_ref.type_index);
-
-  asn_user_blob_update_most_recent_time_stamp (au, lu->blob_type, lu->blob_time_stamp);
 
   if (ut->did_learn_new_user)
     ut->did_learn_new_user (au, /* is_place */ 0);
