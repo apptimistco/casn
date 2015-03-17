@@ -1363,6 +1363,8 @@ asn_register_blob_type (asn_main_t * am, asn_blob_type_t * bt)
 {
   u8 * e;
 
+  ASSERT (bt->path != 0);
+
   bt->index = vec_len (am->blob_types);
   bt->name = format (0, "%s", bt->path);
 
@@ -1375,12 +1377,20 @@ asn_register_blob_type (asn_main_t * am, asn_blob_type_t * bt)
       if (! am->blob_type_index_by_directory_name)
         am->blob_type_index_by_directory_name = hash_create_vec (0, sizeof (bt->name[0]), sizeof (uword));
       _vec_len (bt->name) -= 2;
+
+      /* Name must be unique for blob type. */
+      ASSERT (! hash_get (am->blob_type_index_by_directory_name, bt->name));
+
       hash_set_mem (am->blob_type_index_by_directory_name, bt->name, bt->index);
     }
   else
     {
       if (! am->blob_type_index_by_name)
         am->blob_type_index_by_name = hash_create_vec (0, sizeof (bt->name[0]), sizeof (uword));
+
+      /* Name must be unique for blob type. */
+      ASSERT (! hash_get (am->blob_type_index_by_name, bt->name));
+
       hash_set_mem (am->blob_type_index_by_name, bt->name, bt->index);
     }
 }
