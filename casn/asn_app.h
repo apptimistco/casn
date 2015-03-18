@@ -512,6 +512,8 @@ uword * asn_app_get_oneof_attribute_multiple_choice_bitmap (asn_app_attribute_ma
 
 clib_error_t * asn_app_user_update_blob (asn_app_main_t * app_main, asn_app_user_type_enum_t user_type, u32 user_index);
 
+clib_error_t * asn_app_save_subscribers_for_event (asn_app_main_t * am, asn_socket_t * as, u32 user_index);
+
 asn_blob_type_t asn_app_messages_blob_type, asn_app_user_blob_type, asn_app_subscribers_blob_type,
   asn_app_user_friends_blob_type, asn_app_events_rsvpd_for_user_blob_type, asn_app_event_users_invited_blob_type,
   asn_app_event_groups_invited_blob_type, asn_app_users_rsvpd_for_event_blob_type, asn_app_check_in_blob_type;

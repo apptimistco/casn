@@ -2969,6 +2969,28 @@ asn_blob_type_t asn_app_check_in_blob_type = {
 };
 CLIB_INIT_ADD (asn_blob_type_t, asn_app_check_in_blob_type);
 
+clib_error_t * asn_app_save_subscribers_for_event (asn_app_main_t * am, asn_socket_t * as, u32 user_index)
+{
+    asn_app_event_t * e = asn_app_event_with_index (am, user_index);
+    uword * users = 0;
+    clib_error_t * error;
+
+    users = asn_app_users_add_hash (users, e->users_invited_to_event);
+
+    {
+        hash_pair_t * p;
+        hash_foreach_pair (p, e->groups_invited_to_event, users = asn_app_users_add_group (am, users, p->key));
+    }
+
+    error = asn_save_users (&am->asn_main, as,
+                            &e->gen_user.asn_user,
+                            asn_app_subscribers_blob_type.path,
+                            am->user_types[ASN_APP_USER_TYPE_user].user_type.index,
+                            users);
+    asn_app_users_free (users);
+    return error;
+}
+
 static void register_message_type (asn_app_message_type_t * mt)
 {
   uword ti;
