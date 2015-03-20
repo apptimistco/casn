@@ -2711,6 +2711,12 @@ static clib_error_t * do_check_in (asn_app_main_t * am, asn_app_user_t * user, a
   if (error)
     goto done;
 
+  {
+    asn_app_user_type_t * app_ut = asn_app_user_type_for_user (&place->gen_user.asn_user);
+    if (app_ut->did_update_user)
+      app_ut->did_update_user (&place->gen_user.asn_user, /* is_new_user */ 0);
+  }
+
   vec_add2 (user->check_ins, ci, 1);
   ci->message = vec_dup (check_in_message);
   ci->time_stamp_in_nsec_from_1970 = ts;
@@ -2722,6 +2728,15 @@ static clib_error_t * do_check_in (asn_app_main_t * am, asn_app_user_t * user, a
                                     &user->gen_user.asn_user,
                                     "checkins/%U_%Lx", format_hex_bytes, ci->user_key.data, 8, ci->time_stamp_in_nsec_from_1970,
                                     serialize_asn_app_user_check_in_at_place, ci);
+  if (error)
+    goto done;
+
+  {
+    asn_app_user_type_t * app_ut = asn_app_user_type_for_user (&user->gen_user.asn_user);
+    if (app_ut->did_update_user)
+      app_ut->did_update_user (&user->gen_user.asn_user, /* is_new_user */ 0);
+  }
+
  done:
   return error;
 }
