@@ -101,7 +101,7 @@ typedef CLIB_PACKED (struct {
     struct {
       asn_pdu_id_t id : 8;
 
-      u8 unused[3];
+      u32 sequence_number : 24;
 
       u32 ack_handler_index;
     } exec_request_id;
@@ -531,6 +531,8 @@ typedef struct asn_socket_t {
   asn_session_state_t session_state;
 
   u32 client_socket_index;
+
+  u32 exec_sequence_number;
 } asn_socket_t;
 
 void asn_socket_free (asn_socket_t * as);
