@@ -1273,6 +1273,7 @@ serialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
       serialize (m, serialize_set_of_users_hash, es[i].users_rsvpd_for_event);
       serialize (m, serialize_set_of_users_hash, es[i].users_invited_to_event);
       serialize (m, serialize_set_of_users_hash, es[i].groups_invited_to_event);
+      serialize_likely_small_unsigned_integer (m, es[i].is_private);
     }
 }
 
@@ -1289,6 +1290,7 @@ unserialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
       unserialize (m, unserialize_set_of_users_hash, &es[i].users_rsvpd_for_event);
       unserialize (m, unserialize_set_of_users_hash, &es[i].users_invited_to_event);
       unserialize (m, unserialize_set_of_users_hash, &es[i].groups_invited_to_event);
+      es[i].is_private = unserialize_likely_small_unsigned_integer (m);
     }
 }
 
@@ -1471,6 +1473,7 @@ serialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
   serialize (m, serialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   serialize (m, serialize_asn_app_location, &e->location);
+  serialize_likely_small_unsigned_integer (m, e->is_private);
 }
 
 static void
@@ -1482,6 +1485,7 @@ unserialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_event_for_profile");
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   unserialize (m, unserialize_asn_app_location, &e->location);
+  e->is_private = unserialize_likely_small_unsigned_integer (m);
 }
 
 static void
