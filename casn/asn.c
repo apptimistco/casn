@@ -1895,7 +1895,7 @@ void serialize_asn_user (serialize_main_t * m, va_list * va)
   asn_user_t * u = va_arg (*va, asn_user_t *);
 
   serialize_likely_small_unsigned_integer (m, u->index);
-  serialize_likely_small_unsigned_integer (m, u->private_key_is_valid);
+  serialize_likely_small_unsigned_integer (m, u->is_self_owned);
   serialize_likely_small_unsigned_integer (m, u->current_marks_are_valid);
   serialize_likely_small_unsigned_integer (m, u->user_type_index);
 
@@ -1921,7 +1921,7 @@ void unserialize_asn_user (serialize_main_t * m, va_list * va)
   asn_user_t * u = va_arg (*va, asn_user_t *);
 
   u->index = unserialize_likely_small_unsigned_integer (m);
-  u->private_key_is_valid = unserialize_likely_small_unsigned_integer (m);
+  u->is_self_owned = unserialize_likely_small_unsigned_integer (m);
   u->current_marks_are_valid = unserialize_likely_small_unsigned_integer (m);
   u->user_type_index = unserialize_likely_small_unsigned_integer (m);
 

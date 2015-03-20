@@ -404,10 +404,13 @@ typedef struct asn_user_t
      For most users we don't know private keys. */
   u32 private_key_is_valid : 1;
 
+  /* True when this user was created by self user. */
+  u32 is_self_owned : 1;
+
   /* Indexed by is_place. */
   u32 current_marks_are_valid : 2;
 
-  u32 user_type_index : 29;
+  u32 user_type_index : 28;
 
   asn_crypto_keys_t crypto_keys;
 
@@ -449,10 +452,6 @@ asn_user_del (asn_user_t * au)
 {
   ASSERT (0);
 }
-
-always_inline uword
-asn_user_is_owned_by_self (asn_user_t * au)
-{ return au->private_key_is_valid; }
 
 always_inline asn_user_type_t *
 asn_user_type_for_user (asn_user_t * au)
