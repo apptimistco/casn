@@ -1923,6 +1923,8 @@ asn_app_create_user_and_blob_ack_handler (asn_exec_ack_handler_t * asn_ah, asn_p
 		  format_hex_bytes, au->crypto_keys.public.encrypt_key, 8,
 		  format_hex_bytes, au->crypto_keys.public.auth_key, 8);
 
+  au->is_self_owned = 1;
+
   if (ut->did_set_user_keys)
     ut->did_set_user_keys (au);
 
