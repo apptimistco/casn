@@ -2660,6 +2660,48 @@ asn_app_message_type_t asn_app_rekey_message_type = {
 };
 CLIB_INIT_ADD (asn_app_message_type_t, asn_app_rekey_message_type);
 
+typedef struct {
+  asn_app_message_header_t header;
+  asn_crypto_private_keys_t private_keys;
+} asn_app_private_key_message_t;
+
+static void serialize_asn_app_private_key_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_private_key_message_t * msg = va_arg (*va, asn_app_private_key_message_t *);
+  serialize_data (m, &msg->private_keys, sizeof (msg->private_keys));
+}
+
+static void unserialize_asn_app_private_key_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_private_key_message_t * msg = va_arg (*va, asn_app_private_key_message_t *);
+  unserialize_data (m, &msg->private_keys, sizeof (msg->private_keys));
+}
+
+static void asn_app_did_receive_private_key_message (asn_app_main_t * am, asn_user_t * to_asn_user, asn_app_message_header_t * h)
+{
+  asn_app_private_key_message_t * msg = CONTAINER_OF (h, asn_app_private_key_message_t, header);
+  if (! to_asn_user->private_key_is_valid && ! to_asn_user->is_self_owned)
+    {
+      asn_crypto_keys_t ck;
+      ck.public = to_asn_user->crypto_keys.public;
+      ck.private = msg->private_keys;
+      asn_user_update_keys (&am->asn_main, ASN_TX, to_asn_user,
+			    /* with_public_keys */ &ck.public,
+			    /* with_private_keys */ &ck.private,
+			    /* with_random_private_keys */ 0);
+    }
+}
+
+asn_app_message_type_t asn_app_private_key_message_type = {
+  .name = "private key",
+  .user_msg_n_bytes = sizeof (asn_app_private_key_message_t),
+  .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_private_key_message_t, header),
+  .serialize = serialize_asn_app_private_key_message,
+  .unserialize = unserialize_asn_app_private_key_message,
+  .did_receive_message = asn_app_did_receive_private_key_message,
+};
+CLIB_INIT_ADD (asn_app_message_type_t, asn_app_private_key_message_type);
+
 asn_blob_type_t asn_app_user_friends_blob_type = {
   .path = "user_friends",
   .handler = asn_app_subscribers_blob_handler,
