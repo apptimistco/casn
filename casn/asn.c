@@ -1,18 +1,5 @@
 #include <casn/asn.h>
 
-always_inline void
-asn_crypto_increment_nonce (asn_crypto_state_t * s, asn_rx_or_tx_t rt, u32 increment)
-{
-  u32 u = increment;
-  i32 i;
-  for (i = ARRAY_LEN (s->nonce[rt]) - 1; i >= 0; i--)
-    {
-      u += s->nonce[rt][i];
-      s->nonce[rt][i] = u;
-      u >>= BITS (s->nonce[rt][i]);
-    }
-}
-
 static void asn_crypto_set_nonce (asn_crypto_state_t * cs, u8 * self_public_key, u8 * peer_public_key,
 				  u8 * nonce)
 {
@@ -494,7 +481,7 @@ asn_socket_transmit_frame (asn_socket_t * as, asn_pdu_frame_t * f, uword n_user_
 
   crypto_box_afternm (crypto_box_buffer, crypto_box_buffer, crypto_box_reserved_pad_bytes + n_user_data_bytes,
 		      cs->nonce[ASN_TX], cs->shared_secret);
-  asn_crypto_increment_nonce (cs, ASN_TX, 2);
+  asn_crypto_increment_nonce (cs->nonce[ASN_TX], 2);
 
   /* Copy in authenticator + encrypted user data. */
   memcpy (f->user_data_authentication, crypto_box_buffer + crypto_box_reserved_pad_authentication_offset,
@@ -1044,7 +1031,7 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
       error = clib_error_return (0, "authentication fails");
       goto done;
     }
-  asn_crypto_increment_nonce (&as->ephemeral_crypto_state, ASN_RX, 2);
+  asn_crypto_increment_nonce (as->ephemeral_crypto_state.nonce[ASN_RX], 2);
 
   vec_add (as->rx_pdu, crypto_box_buffer + crypto_box_reserved_pad_bytes, n_user_data_bytes);
   vec_reset_length (as->rx_frame);

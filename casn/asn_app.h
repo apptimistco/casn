@@ -4,6 +4,8 @@
 #include <uclib/uclib.h>
 #include <casn/asn.h>
 
+struct asn_app_main_t;
+
 typedef struct {
   /* Thumbnail for object as JPEG (or other) image. */
   u8 * thumbnail_as_image_data;
@@ -64,6 +66,8 @@ typedef struct {
   u32 user_msg_offset_of_message_header;
   serialize_function_t * serialize, * unserialize;
 
+  void (* did_receive_message) (struct asn_app_main_t * am, asn_user_t * au, asn_app_message_header_t * msg);
+
   clib_error_t * (* maybe_learn_new_user_from_message) (asn_main_t * am, asn_socket_t * as, asn_user_t * au,
                                                         asn_app_message_header_t * h,
                                                         uword * learning_new_user_from_message);
@@ -96,6 +100,7 @@ typedef struct {
   void ** message_pool_by_type;
   mhash_t message_ref_by_time_stamp;
   asn_app_message_header_t most_recent_msg_header;
+  u32 * user_pairs;
 } asn_app_user_messages_t;
 
 void asn_app_user_messages_free (asn_app_user_messages_t * m);
@@ -155,6 +160,29 @@ asn_app_free_message_with_type (asn_app_user_messages_t * um, asn_app_message_ty
     mt->free (h);
   pool_put_index (pool, h->ref.pool_index);
 }
+
+typedef union {
+  struct {
+    u8 src[crypto_box_public_key_bytes];
+    u8 dst[crypto_box_public_key_bytes];
+  };
+  uword as_uword[2 * crypto_box_public_key_bytes / sizeof (uword)];
+} asn_app_message_public_key_pair_t;
+
+typedef struct {
+  asn_app_message_public_key_pair_t public_key_pair;
+
+  /* Random ephemeral private key to use for this destination. */
+  u8 dst_private_key[crypto_box_private_key_bytes];
+
+  /* src -> dst shared secret. */
+  u8 shared_secret[crypto_box_shared_secret_bytes];
+
+  /* src public -> owner private shared secret. */
+  u8 nonce[crypto_box_nonce_bytes];
+
+  u32 index;
+} asn_app_message_user_pair_t;
 
 #define foreach_asn_app_attribute_type		\
   _ (u8) _ (u16) _ (u32) _ (u64) _ (f64)	\
@@ -374,12 +402,17 @@ typedef enum {
   ASN_APP_N_USER_TYPE,
 } asn_app_user_type_enum_t;
 
-typedef struct {
+typedef struct asn_app_main_t {
   asn_main_t asn_main;
 
   asn_app_user_type_t user_types[ASN_APP_N_USER_TYPE];
 
   uword * place_index_by_unique_id;
+
+  asn_app_message_user_pair_t * user_message_pair_pool;
+
+  /* Hash mapping crypto header to message user key pair. */
+  uword * user_message_pair_index_by_public_key_pair;
 } asn_app_main_t;
 
 always_inline asn_app_user_t *

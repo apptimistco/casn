@@ -43,6 +43,19 @@ typedef struct {
   u8 nonce[ASN_N_RX_TX][crypto_box_nonce_bytes];
 } asn_crypto_state_t;
 
+always_inline void
+asn_crypto_increment_nonce (u8 * nonce, u32 increment)
+{
+  u32 u = increment;
+  i32 i;
+  for (i = crypto_box_nonce_bytes - 1; i >= 0; i--)
+    {
+      u += nonce[i];
+      nonce[i] = u;
+      u >>= BITS (nonce[i]);
+    }
+}
+
 #define foreach_asn_pdu_id                      \
   _ (ack, 1)					\
   _ (exec, 2)					\
