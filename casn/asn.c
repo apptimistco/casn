@@ -1687,12 +1687,15 @@ void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_
   /* Set location mark for current user. */
   {
     asn_user_t * self_user = asn_user_by_ref (&am->self_user_ref);
-    asn_user_type_t * ut = pool_elt (asn_user_type_pool, self_user->user_type_index);
+    asn_user_type_t * ut;
     uword is_place = 0;
+
+    ASSERT (self_user);
 
     self_user->current_marks_are_valid |= 1 << is_place;
     self_user->current_marks[is_place] = asn_user_mark_response_for_position (pos);
 
+    ut = pool_elt (asn_user_type_pool, self_user->user_type_index);
     if (ut->user_mark_did_change)
       ut->user_mark_did_change (self_user, is_place);
   }

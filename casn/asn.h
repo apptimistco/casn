@@ -434,6 +434,10 @@ asn_user_alloc_with_type (asn_user_type_t * ut)
   return au;
 }
 
+always_inline uword
+asn_user_is_owned_by_self (asn_user_t * au)
+{ return au->is_self_owned; }
+
 always_inline void
 asn_user_del (asn_user_t * au)
 {
