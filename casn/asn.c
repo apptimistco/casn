@@ -547,14 +547,64 @@ clib_error_t * asn_socket_tx (asn_socket_t * as)
   return error;
 }
 
+static u8 * format_asn_pdu_id (u8 * s, va_list * va)
+{
+  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
+  char * t;
+  switch (id)
+    {
+#define _(f,n) case ASN_PDU_##f: t = #f; break;
+      foreach_asn_pdu_id
+#undef _
+
+    default:
+      return format (s, "unknown 0x%x", id);
+    }
+
+  vec_add (s, t, strlen (t));
+
+  return s;
+}
+
+static u8 * format_asn_pdu_header_request_id (u8 * s, va_list * va)
+{
+  asn_pdu_header_t * h = va_arg (*va, asn_pdu_header_t *);
+
+  s = format (s, "%U", format_asn_pdu_id, h->generic_request_id.id);
+  switch (h->generic_request_id.id)
+    {
+    case ASN_PDU_exec:
+      s = format (s, ", sequence 0x%x, ack handler %d", h->exec_request_id.sequence_number, h->exec_request_id.ack_handler_index);
+      break;
+
+    case ASN_PDU_login:
+      s = format (s, ", user-type %U user-index %d",
+                  format_asn_user_type, h->login_request_id.user_type_index,
+                  h->login_request_id.user_index);
+      break;
+
+    default:
+      break;
+    }
+
+  return s;
+}
+
 static u8 * format_asn_exec_command (u8 * s, va_list * va)
 {
+  asn_pdu_header_t * h = va_arg (*va, asn_pdu_header_t *);
   u8 * cmd = va_arg (*va, u8 *);
   u8 * p = cmd;
   u8 * e = vec_end (cmd);
   u8 * q;
   u32 i = 0;
   uword indent = format_get_indent (s);
+
+  s = format (s, "%U\n%Urequest %U\n%U",
+              format_time_float, 0, unix_time_now (),
+              format_white_space, indent,
+              format_asn_pdu_header_request_id, h,
+              format_white_space, indent);
 
   while (p < e)
     {
@@ -619,17 +669,18 @@ asn_socket_exec_helper (asn_main_t * am,
 
   memcpy (h->data, s, vec_len (s));
 
-  if (am->verbose)
-    clib_warning ("%U", format_asn_exec_command, s);
-
-  vec_free (s);
-
   {
     asn_exec_ack_handler_t ** ah;
     pool_get (as->exec_ack_handler_pool, ah);
     ah[0] = ack_handler;
     h->exec_request_id.ack_handler_index = ah - as->exec_ack_handler_pool;
+    h->exec_request_id.sequence_number = as->exec_sequence_number++;
   }
+
+  if (am->verbose)
+    clib_warning ("%U", format_asn_exec_command, h, s);
+
+  vec_free (s);
 
   return asn_socket_tx (as);
 }
@@ -682,35 +733,6 @@ u8 * format_asn_socket (u8 * s, va_list * va)
 
   return s;
 }
-
-static u8 * format_asn_pdu_id (u8 * s, va_list * va)
-{
-  asn_pdu_id_t id = va_arg (*va, asn_pdu_id_t);
-  char * t;
-  switch (id)
-    {
-#define _(f,n) case ASN_PDU_##f: t = #f; break;
-      foreach_asn_pdu_id
-#undef _
-
-    default:
-      return format (s, "unknown 0x%x", id);
-    }
-
-  vec_add (s, t, strlen (t));
-
-  return s;
-}
-
-#if 0
-static clib_error_t *
-asn_socket_tx_ack_pdu (asn_main_t * am, asn_socket_t * as, asn_ack_pdu_status_t status)
-{
-  asn_pdu_ack_t * ack = asn_socket_tx_add_pdu (as, ASN_PDU_ack, sizeof (ack[0]));
-  ack->status = status;
-  return asn_socket_tx (as);
-}
-#endif
 
 static void asn_socket_crypto_set_peer (asn_socket_t * as, u8 * peer_public_key, u8 * peer_nonce)
 {
@@ -843,16 +865,22 @@ static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
 {
   asn_pdu_ack_t * ack = va_arg (*va, asn_pdu_ack_t *);
   u32 n_bytes = va_arg (*va, u32);
+  uword indent = format_get_indent (s);
 
-  s = format (s, "%U: request: %U, status: %U",
+  s = format (s, "%U\n%Ustatus: %U, request: %U",
               format_asn_time_stamp, ack->time_stamp_in_nsec_from_1970,
-              format_asn_pdu_id, ack->header.generic_request_id.id,
-              format_asn_ack_pdu_status, ack->status);
+              format_white_space, indent,
+              format_asn_ack_pdu_status, ack->status,
+              format_asn_pdu_header_request_id, &ack->header);
 
   if (ack->status != ASN_ACK_PDU_STATUS_success)
-    s = format (s, " %*s", n_bytes - sizeof (ack[0]), ack->data);
+    s = format (s, "\n%U%*s",
+                format_white_space, indent,
+                n_bytes - sizeof (ack[0]), ack->data);
   else if (0 && n_bytes > sizeof (ack[0]))
-    s = format (s, ", data %U", format_hex_bytes, ack->data, n_bytes - sizeof (ack[0]));
+    s = format (s, "\n%Udata %U",
+                format_white_space, indent,
+                format_hex_bytes, ack->data, n_bytes - sizeof (ack[0]));
 
   return s;
 }
@@ -960,13 +988,22 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
 {
   asn_pdu_header_t * h = va_arg (*va, asn_pdu_header_t *);
   u32 n_bytes = va_arg (*va, u32);
+  uword indent = format_get_indent (s);
 
-  s = format (s, "%U version %d", format_asn_pdu_id, h->id, h->version);
+  s = format (s, "%U\n%U%U version %d",
+              format_time_float, 0, unix_time_now (),
+              format_white_space, indent,
+              format_asn_pdu_id, h->id, h->version);
 
   switch (h->id)
     {
     default: break;
-#define _(f,n) case ASN_PDU_##f: s = format (s, ", %U", format_asn_##f##_pdu, h, n_bytes); break;
+
+#define _(f,n) case ASN_PDU_##f:                                \
+      s = format (s, "\n%U%U", format_white_space, indent,      \
+                  format_asn_##f##_pdu, h, n_bytes);            \
+      break;
+
       foreach_asn_pdu_id;
 #undef _
     }
@@ -1061,9 +1098,7 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
   asn_pdu_header_t * h = (void *) as->rx_pdu;
 
   if (am->verbose)
-    clib_warning ("%U\n  %U",
-		  format_time_float, 0, unix_time_now (),
-		  format_asn_pdu, h, vec_len (as->rx_pdu));
+    clib_warning ("%U", format_asn_pdu, h, vec_len (as->rx_pdu));
 
   switch (h->id)
     {
