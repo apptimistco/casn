@@ -1352,6 +1352,8 @@ asn_socket_exec_newuser_ack_handler (asn_exec_ack_handler_t * ah, asn_pdu_ack_t 
       am->self_user_ref.user_index = au->index;
     }
 
+  au->is_self_owned = 1;
+
   if (ut->did_set_user_keys)
     ut->did_set_user_keys (au);
 
