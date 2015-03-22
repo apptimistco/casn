@@ -114,7 +114,7 @@ typedef CLIB_PACKED (struct {
     struct {
       asn_pdu_id_t id : 8;
 
-      u8 unused[3];
+      u32 sequence_number : 24;
 
       u32 ack_handler_index;
     } exec_request_id;
@@ -447,6 +447,10 @@ asn_user_alloc_with_type (asn_user_type_t * ut)
   return au;
 }
 
+always_inline uword
+asn_user_is_owned_by_self (asn_user_t * au)
+{ return au->is_self_owned; }
+
 always_inline void
 asn_user_del (asn_user_t * au)
 {
@@ -540,6 +544,8 @@ typedef struct asn_socket_t {
   asn_session_state_t session_state;
 
   u32 client_socket_index;
+
+  u32 exec_sequence_number;
 } asn_socket_t;
 
 void asn_socket_free (asn_socket_t * as);

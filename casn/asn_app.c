@@ -1336,6 +1336,7 @@ serialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
       serialize (m, serialize_set_of_users_hash, es[i].users_rsvpd_for_event);
       serialize (m, serialize_set_of_users_hash, es[i].users_invited_to_event);
       serialize (m, serialize_set_of_users_hash, es[i].groups_invited_to_event);
+      serialize_likely_small_unsigned_integer (m, es[i].is_private);
     }
 }
 
@@ -1352,6 +1353,7 @@ unserialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
       unserialize (m, unserialize_set_of_users_hash, &es[i].users_rsvpd_for_event);
       unserialize (m, unserialize_set_of_users_hash, &es[i].users_invited_to_event);
       unserialize (m, unserialize_set_of_users_hash, &es[i].groups_invited_to_event);
+      es[i].is_private = unserialize_likely_small_unsigned_integer (m);
     }
 }
 
@@ -1549,6 +1551,7 @@ serialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
   serialize (m, serialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   serialize (m, serialize_asn_app_location, &e->location);
+  serialize_likely_small_unsigned_integer (m, e->is_private);
 }
 
 static void
@@ -1560,6 +1563,7 @@ unserialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_event_for_profile");
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   unserialize (m, unserialize_asn_app_location, &e->location);
+  e->is_private = unserialize_likely_small_unsigned_integer (m);
 }
 
 static void
@@ -2957,6 +2961,12 @@ static clib_error_t * do_check_in (asn_app_main_t * am, asn_app_user_t * user, a
   if (error)
     goto done;
 
+  {
+    asn_app_user_type_t * app_ut = asn_app_user_type_for_user (&place->gen_user.asn_user);
+    if (app_ut->did_update_user)
+      app_ut->did_update_user (&place->gen_user.asn_user, /* is_new_user */ 0);
+  }
+
   vec_add2 (user->check_ins, ci, 1);
   ci->message = vec_dup (check_in_message);
   ci->time_stamp_in_nsec_from_1970 = ts;
@@ -2968,6 +2978,15 @@ static clib_error_t * do_check_in (asn_app_main_t * am, asn_app_user_t * user, a
                                     &user->gen_user.asn_user,
                                     "checkins/%U_%Lx", format_hex_bytes, ci->user_key.data, 8, ci->time_stamp_in_nsec_from_1970,
                                     serialize_asn_app_user_check_in_at_place, ci);
+  if (error)
+    goto done;
+
+  {
+    asn_app_user_type_t * app_ut = asn_app_user_type_for_user (&user->gen_user.asn_user);
+    if (app_ut->did_update_user)
+      app_ut->did_update_user (&user->gen_user.asn_user, /* is_new_user */ 0);
+  }
+
  done:
   return error;
 }
