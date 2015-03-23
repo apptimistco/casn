@@ -3,12 +3,24 @@
 always_inline asn_app_message_user_pair_t *
 asn_app_message_user_pair_by_public_key_pair (asn_app_main_t * am, asn_app_message_public_key_pair_t * kp)
 {
-  uword * p = hash_get_mem (am->user_message_pair_index_by_public_key_pair, kp);
+  uword * p;
+  asn_app_message_public_key_pair_t aligned_kp;
+
+  /* Hash requires aligned address for key. */
+  if (pointer_to_uword (kp) % 2)
+    {
+      aligned_kp = kp[0];
+      kp = &aligned_kp;
+    }
+  ASSERT (pointer_to_uword (kp) % 2 == 0);
+  p = hash_get_mem (am->user_message_pair_index_by_public_key_pair, kp);
   return p ? pool_elt_at_index (am->user_message_pair_pool, p[0]) : 0;
 }
 
-static asn_app_message_user_pair_t *
-new_message_user_pair (asn_app_main_t * am, u8 * src_private_key, u8 * dst_public_key)
+static uword
+new_message_user_pair_for_tx (asn_app_main_t * am,
+                              u8 * dst_public_key,
+			      u8 * nonce)
 {
   asn_app_message_user_pair_t * up;
 
@@ -17,17 +29,50 @@ new_message_user_pair (asn_app_main_t * am, u8 * src_private_key, u8 * dst_publi
 
   /* Make an ephemeral key pair for messages to this destination src -> dst. */
   memcpy (up->public_key_pair.dst, dst_public_key, sizeof (up->public_key_pair.dst));
-  crypto_box_keypair (up->public_key_pair.src, up->dst_private_key, /* want_random */ 1);
-  crypto_box_beforenm (up->shared_secret, up->public_key_pair.dst, up->dst_private_key);
+  crypto_box_keypair (up->public_key_pair.src, up->src_private_key, /* want_random */ 1);
 
-  /* Derive nonce as shared secret from src private key -> dst public key. */
-  {
-    u8 nonce_shared_secret[crypto_box_shared_secret_bytes];
-    crypto_box_beforenm (nonce_shared_secret, up->public_key_pair.dst, src_private_key);
-    memcpy (up->nonce, nonce_shared_secret, sizeof (up->nonce));
-  }
+  crypto_box_beforenm (up->shared_secret, up->public_key_pair.dst, up->src_private_key);
 
-  return up;
+  if (nonce)
+    memcpy (up->nonce, nonce, sizeof (up->nonce));
+  else
+    crypto_random_bytes (up->nonce, sizeof (up->nonce));
+
+  hash_set_mem (am->user_message_pair_index_by_public_key_pair, &up->public_key_pair, up->index);
+
+  return up->index;
+}
+
+static uword
+new_message_user_pair_for_rx (asn_app_main_t * am,
+                              asn_app_message_public_key_pair_t * kp,
+                              u8 * dst_private_key,
+			      u8 * nonce)
+{
+  asn_app_message_user_pair_t * up;
+
+  pool_get (am->user_message_pair_pool, up);
+  up->index = up - am->user_message_pair_pool;
+
+  up->public_key_pair = kp[0];
+  memcpy (up->dst_private_key, dst_private_key, sizeof (up->dst_private_key));
+
+  crypto_box_beforenm (up->shared_secret, up->public_key_pair.src, up->dst_private_key);
+
+  memcpy (up->nonce, nonce, sizeof (up->nonce));
+
+  hash_set_mem (am->user_message_pair_index_by_public_key_pair, &up->public_key_pair, up->index);
+
+  return up->index;
+}
+
+static void
+free_user_pair (asn_app_main_t * am, uword up_index)
+{
+  asn_app_message_user_pair_t * up = pool_elt_at_index (am->user_message_pair_pool, up_index);
+  hash_unset_mem (am->user_message_pair_index_by_public_key_pair, &up->public_key_pair);
+  memset (up, ~0, sizeof (up[0]));
+  pool_put_index (am->user_message_pair_pool, up_index);
 }
 
 static void serialize_pool_asn_app_message_user_pair (serialize_main_t * m, va_list * va)
@@ -2075,19 +2120,25 @@ asn_app_user_message_handler (asn_main_t * am, asn_socket_t * as,
 
   {
     asn_app_message_public_key_pair_t * kp = &crypto_header->public_key_pair;
-    asn_app_message_user_pair_t * up = asn_app_message_user_pair_by_public_key_pair (0, kp);
+    asn_app_message_user_pair_t * up = asn_app_message_user_pair_by_public_key_pair (app_main, kp);
     u8 * crypto_box_buffer;
+    uword created_ephemeral_user_pair = 0;
 
     if (! up)
       {
 	asn_user_t * dst_au = asn_user_with_encrypt_key (am, ASN_TX, kp->dst);
 	if (dst_au && dst_au->private_key_is_valid)
 	  {
-	    asn_user_t * src_au = asn_user_by_ref (&am->self_user_ref);
-	    ASSERT (src_au->private_key_is_valid);
-	    up = new_message_user_pair (app_main,
-					src_au->crypto_keys.private.encrypt_key,
-					dst_au->crypto_keys.public.encrypt_key);
+	    asn_user_t * self_au = asn_user_by_ref (&am->self_user_ref);
+	    uword up_index;
+
+	    ASSERT (self_au->private_key_is_valid);
+	    up_index = new_message_user_pair_for_rx (app_main,
+						     kp,
+						     dst_au->crypto_keys.private.encrypt_key,
+						     am->server_nonce);
+	    up = pool_elt_at_index (app_main->user_message_pair_pool, up_index);
+            created_ephemeral_user_pair = 1;
 	  }
       }
 
@@ -2108,7 +2159,10 @@ asn_app_user_message_handler (asn_main_t * am, asn_socket_t * as,
 	goto done;
       }
 
-    asn_crypto_increment_nonce (up->nonce, 1);
+    if (created_ephemeral_user_pair)
+      free_user_pair (app_main, up->index);
+    else
+      asn_crypto_increment_nonce (up->nonce, 1);
   }
 
   owner_au = asn_user_with_encrypt_key (am, ASN_TX, blob->owner);
@@ -2358,6 +2412,49 @@ asn_app_user_by_type_and_index (asn_app_main_t * app_main,
   return asn_user_by_ref (&user_ref);
 }
 
+typedef struct {
+  asn_app_message_header_t header;
+  u8 src_public_key[crypto_box_public_key_bytes];
+  u8 nonce[crypto_box_nonce_bytes];
+} asn_app_rekey_message_t;
+
+static void serialize_asn_app_rekey_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_rekey_message_t * msg = va_arg (*va, asn_app_rekey_message_t *);
+  serialize_data (m, msg->src_public_key, sizeof (msg->src_public_key));
+  serialize_data (m, msg->nonce, sizeof (msg->nonce));
+}
+
+static void unserialize_asn_app_rekey_message (serialize_main_t * m, va_list * va)
+{
+  asn_app_rekey_message_t * msg = va_arg (*va, asn_app_rekey_message_t *);
+  unserialize_data (m, msg->src_public_key, sizeof (msg->src_public_key));
+  unserialize_data (m, msg->nonce, sizeof (msg->nonce));
+}
+
+static void asn_app_did_receive_rekey_message (asn_app_main_t * am, asn_user_t * to_asn_user, asn_app_message_header_t * h)
+{
+  asn_app_rekey_message_t * msg = CONTAINER_OF (h, asn_app_rekey_message_t, header);
+  asn_app_gen_user_t * to_gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
+  uword pair_index;
+  asn_app_message_public_key_pair_t kp;
+  memcpy (kp.src, msg->src_public_key, sizeof (kp.src));
+  memcpy (kp.dst, to_asn_user->crypto_keys.public.encrypt_key, sizeof (kp.dst));
+  ASSERT (to_asn_user->private_key_is_valid);
+  pair_index = new_message_user_pair_for_rx (am, &kp, to_asn_user->crypto_keys.private.encrypt_key, msg->nonce);
+  vec_add1 (to_gen_user->user_messages.user_pairs, pair_index);
+}
+
+asn_app_message_type_t asn_app_rekey_message_type = {
+  .name = "rekey",
+  .user_msg_n_bytes = sizeof (asn_app_rekey_message_t),
+  .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_rekey_message_t, header),
+  .serialize = serialize_asn_app_rekey_message,
+  .unserialize = unserialize_asn_app_rekey_message,
+  .did_receive_message = asn_app_did_receive_rekey_message,
+};
+CLIB_INIT_ADD (asn_app_message_type_t, asn_app_rekey_message_type);
+
 static clib_error_t *
 asn_app_send_message_to_user (asn_app_main_t * app_main,
                               asn_user_t * to_asn_user,
@@ -2368,6 +2465,7 @@ asn_app_send_message_to_user (asn_app_main_t * app_main,
   asn_app_self_sent_message_blob_ack_handler_t * ah;
   asn_app_message_type_t * mt;
   serialize_main_t serialize_main;
+  u8 * contents = 0;
 
   memset (&serialize_main, 0, sizeof (serialize_main));
 
@@ -2390,8 +2488,7 @@ asn_app_send_message_to_user (asn_app_main_t * app_main,
     }
 
   {
-    u8 * content = serialize_main_get_buffer (&serialize_main);
-    asn_app_message_crypto_header_t * ch = (void *) content;
+    asn_app_message_crypto_header_t * ch;
     asn_app_gen_user_t * to_gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
     asn_app_message_user_pair_t * up;
     uword n_user_data_bytes;
@@ -2400,21 +2497,46 @@ asn_app_send_message_to_user (asn_app_main_t * app_main,
     if (vec_len (to_gen_user->user_messages.user_pairs) == 0)
       {
 	asn_user_t * src_au = asn_user_by_ref (&am->self_user_ref);
-	ASSERT (src_au->private_key_is_valid);
-	up = new_message_user_pair (app_main,
-				    src_au->crypto_keys.private.encrypt_key,
-				    to_asn_user->crypto_keys.public.encrypt_key);
-	vec_add1 (to_gen_user->user_messages.user_pairs, up->index);
-      }
-    else
-      up = pool_elt_at_index (app_main->user_message_pair_pool, vec_end (to_gen_user->user_messages.user_pairs)[-1]);
+	asn_app_rekey_message_t * rekey_msg;
+	uword up_index[2];
+	asn_app_message_user_pair_t * after_rekey_pair;
 
-    n_user_data_bytes = vec_len (content) - sizeof (ch[0]);
+	ASSERT (src_au->private_key_is_valid);
+
+	up_index[0] = new_message_user_pair_for_tx (app_main,
+						    to_asn_user->crypto_keys.public.encrypt_key,
+						    am->server_nonce);
+	vec_add1 (to_gen_user->user_messages.user_pairs, up_index[0]);
+
+	rekey_msg = asn_app_new_message_with_type (&to_gen_user->user_messages, &asn_app_rekey_message_type);
+	up_index[1] = new_message_user_pair_for_tx (app_main,
+						    to_asn_user->crypto_keys.public.encrypt_key,
+						    /* nonce */ 0);
+	after_rekey_pair = pool_elt_at_index (app_main->user_message_pair_pool, up_index[1]);
+	memcpy (rekey_msg->src_public_key, after_rekey_pair->public_key_pair.src, sizeof (rekey_msg->src_public_key));
+	memcpy (rekey_msg->nonce, after_rekey_pair->nonce, sizeof (rekey_msg->nonce));
+	  
+	/* Use permanent keys for rekey message (first message). */
+	error = asn_app_send_message_to_user (app_main, to_asn_user, &rekey_msg->header);
+	if (error)
+	  return error;
+
+	/* Use ephemeral rekey pair for original message. */
+	vec_add1 (to_gen_user->user_messages.user_pairs, up_index[1]);
+      }
+
+    up = pool_elt_at_index (app_main->user_message_pair_pool, vec_end (to_gen_user->user_messages.user_pairs)[-1]);
+
+    contents = serialize_close_vector (&serialize_main);
+    n_user_data_bytes = vec_len (contents) - sizeof (ch[0]);
+    ch = (void *) contents;
     crypto_box_buffer = ch->authentication - crypto_box_reserved_pad_authentication_offset;
     memset (crypto_box_buffer, 0, crypto_box_reserved_pad_authentication_offset + sizeof (ch->authentication));
     crypto_box_afternm (crypto_box_buffer, crypto_box_buffer, crypto_box_reserved_pad_bytes + n_user_data_bytes,
 			up->nonce, up->shared_secret);
+
     asn_crypto_increment_nonce (up->nonce, 1);
+    ch->public_key_pair = up->public_key_pair;
   }
 
   ah = asn_exec_ack_handler_create_with_function_in_container
@@ -2429,15 +2551,16 @@ asn_app_send_message_to_user (asn_app_main_t * app_main,
   error = asn_socket_exec_with_ack_handler
     (am, /* all client sockets */ 0,
      &ah->ack_handler,
-     "blob%c~%U%c-%c%c%U", 0,
+     "blob%c~%U%c-%c%c%v", 0,
      format_hex_bytes, to_asn_user->crypto_keys.public.encrypt_key, sizeof (to_asn_user->crypto_keys.public.encrypt_key),
      0, 0, 0,
-     format_serialize_current_buffer, &serialize_main);
+     contents);
 
  done:
+  vec_free (contents);
   {
-    u8 * content = serialize_close_vector (&serialize_main);
-    vec_free (content);
+    u8 * sv = serialize_close_vector (&serialize_main);
+    vec_free (sv);
   }
   return error;
 }
@@ -2477,7 +2600,7 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                                    char * fmt, ...)
 {
   asn_user_t * to_asn_user;
-  asn_app_gen_user_t * gen_user;
+  asn_app_gen_user_t * to_gen_user;
   asn_app_text_message_t * msg;
   va_list va;
 
@@ -2487,9 +2610,9 @@ asn_app_send_text_message_to_user (asn_app_main_t * app_main,
                               format_asn_app_user_type_enum, to_user_type,
                               to_user_index);
 
-  gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
+  to_gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
 
-  msg = asn_app_new_message_with_type (&gen_user->user_messages, &asn_app_text_message_type);
+  msg = asn_app_new_message_with_type (&to_gen_user->user_messages, &asn_app_text_message_type);
 
   va_start (va, fmt);
   msg->text = va_format (0, fmt, &va);
@@ -2623,46 +2746,6 @@ asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
 
   return asn_app_send_message_to_user (app_main, to_asn_user, &msg->header);
 }
-
-typedef struct {
-  asn_app_message_header_t header;
-  u8 dst_public_key[crypto_box_public_key_bytes];
-} asn_app_rekey_message_t;
-
-static void serialize_asn_app_rekey_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_rekey_message_t * msg = va_arg (*va, asn_app_rekey_message_t *);
-  serialize_data (m, msg->dst_public_key, sizeof (msg->dst_public_key));
-}
-
-static void unserialize_asn_app_rekey_message (serialize_main_t * m, va_list * va)
-{
-  asn_app_rekey_message_t * msg = va_arg (*va, asn_app_rekey_message_t *);
-  unserialize_data (m, msg->dst_public_key, sizeof (msg->dst_public_key));
-}
-
-static void asn_app_did_receive_rekey_message (asn_app_main_t * am, asn_user_t * to_asn_user, asn_app_message_header_t * h)
-{
-  asn_app_rekey_message_t * msg = CONTAINER_OF (h, asn_app_rekey_message_t, header);
-  asn_app_gen_user_t * to_gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
-  asn_app_message_user_pair_t * up;
-  asn_user_t * self_au = asn_user_by_ref (&am->asn_main.self_user_ref);
-  ASSERT (self_au->private_key_is_valid);
-  up = new_message_user_pair (am,
-			      self_au->crypto_keys.private.encrypt_key,
-			      msg->dst_public_key);
-  vec_add1 (to_gen_user->user_messages.user_pairs, up->index);
-}
-
-asn_app_message_type_t asn_app_rekey_message_type = {
-  .name = "rekey",
-  .user_msg_n_bytes = sizeof (asn_app_rekey_message_t),
-  .user_msg_offset_of_message_header = STRUCT_OFFSET_OF (asn_app_rekey_message_t, header),
-  .serialize = serialize_asn_app_rekey_message,
-  .unserialize = unserialize_asn_app_rekey_message,
-  .did_receive_message = asn_app_did_receive_rekey_message,
-};
-CLIB_INIT_ADD (asn_app_message_type_t, asn_app_rekey_message_type);
 
 typedef struct {
   asn_app_message_header_t header;

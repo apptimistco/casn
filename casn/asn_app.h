@@ -172,8 +172,11 @@ typedef union {
 typedef struct {
   asn_app_message_public_key_pair_t public_key_pair;
 
-  /* Random ephemeral private key to use for this destination. */
-  u8 dst_private_key[crypto_box_private_key_bytes];
+  /* Random ephemeral private key to use for this destination or source. */
+  union {
+    u8 src_private_key[crypto_box_private_key_bytes];
+    u8 dst_private_key[crypto_box_private_key_bytes];
+  };
 
   /* src -> dst shared secret. */
   u8 shared_secret[crypto_box_shared_secret_bytes];
