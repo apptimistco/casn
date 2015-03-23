@@ -1315,26 +1315,37 @@ unserialize_pool_asn_app_user (serialize_main_t * m, va_list * va)
 static void
 serialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
 {
-  asn_app_user_group_t * u = va_arg (*va, asn_app_user_group_t *);
+  asn_app_user_group_t * us = va_arg (*va, asn_app_user_group_t *);
   u32 n_users = va_arg (*va, u32);
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      serialize (m, serialize_asn_app_gen_user, &u[i].gen_user);
-      serialize (m, serialize_set_of_users_hash, u[i].group_users);
+      asn_app_user_group_t * u = &us[i];
+      serialize (m, serialize_asn_app_gen_user, &u->gen_user);
+      serialize (m, serialize_set_of_users_hash, u->group_users);
+      serialize_likely_small_unsigned_integer (m, u->is_private);
+      if (! u->is_private && u->gen_user.asn_user.private_key_is_valid)
+	serialize (m, serialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
     }
 }
 
 static void
 unserialize_pool_asn_app_user_group (serialize_main_t * m, va_list * va)
 {
-  asn_app_user_group_t * u = va_arg (*va, asn_app_user_group_t *);
+  asn_app_user_group_t * us = va_arg (*va, asn_app_user_group_t *);
   u32 n_users = va_arg (*va, u32);
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      unserialize (m, unserialize_asn_app_gen_user, &u[i].gen_user);
-      unserialize (m, unserialize_set_of_users_hash, &u[i].group_users);
+      asn_app_user_group_t * u = &us[i];
+      unserialize (m, unserialize_asn_app_gen_user, &u->gen_user);
+      unserialize (m, unserialize_set_of_users_hash, &u->group_users);
+      u->is_private = unserialize_likely_small_unsigned_integer (m);
+      if (! u->is_private && u->gen_user.asn_user.private_key_is_valid)
+	{
+	  unserialize (m, unserialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
+	  u->gen_user.asn_user.private_key_is_valid = 1;
+	}
     }
 }
 
@@ -1376,12 +1387,15 @@ serialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      serialize (m, serialize_asn_app_gen_user, &es[i].gen_user);
-      serialize (m, serialize_asn_app_location, &es[i].location);
-      serialize (m, serialize_set_of_users_hash, es[i].users_rsvpd_for_event);
-      serialize (m, serialize_set_of_users_hash, es[i].users_invited_to_event);
-      serialize (m, serialize_set_of_users_hash, es[i].groups_invited_to_event);
-      serialize_likely_small_unsigned_integer (m, es[i].is_private);
+      asn_app_event_t * e = &es[i];
+      serialize (m, serialize_asn_app_gen_user, &e->gen_user);
+      serialize (m, serialize_asn_app_location, &e->location);
+      serialize (m, serialize_set_of_users_hash, e->users_rsvpd_for_event);
+      serialize (m, serialize_set_of_users_hash, e->users_invited_to_event);
+      serialize (m, serialize_set_of_users_hash, e->groups_invited_to_event);
+      serialize_likely_small_unsigned_integer (m, e->is_private);
+      if (! e->is_private && e->gen_user.asn_user.private_key_is_valid)
+	serialize (m, serialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
     }
 }
 
@@ -1393,12 +1407,18 @@ unserialize_pool_asn_app_event (serialize_main_t * m, va_list * va)
   u32 i;
   for (i = 0; i < n_users; i++)
     {
-      unserialize (m, unserialize_asn_app_gen_user, &es[i].gen_user);
-      unserialize (m, unserialize_asn_app_location, &es[i].location);
-      unserialize (m, unserialize_set_of_users_hash, &es[i].users_rsvpd_for_event);
-      unserialize (m, unserialize_set_of_users_hash, &es[i].users_invited_to_event);
-      unserialize (m, unserialize_set_of_users_hash, &es[i].groups_invited_to_event);
-      es[i].is_private = unserialize_likely_small_unsigned_integer (m);
+      asn_app_event_t * e = &es[i];
+      unserialize (m, unserialize_asn_app_gen_user, &e->gen_user);
+      unserialize (m, unserialize_asn_app_location, &e->location);
+      unserialize (m, unserialize_set_of_users_hash, &e->users_rsvpd_for_event);
+      unserialize (m, unserialize_set_of_users_hash, &e->users_invited_to_event);
+      unserialize (m, unserialize_set_of_users_hash, &e->groups_invited_to_event);
+      e->is_private = unserialize_likely_small_unsigned_integer (m);
+      if (! e->is_private && e->gen_user.asn_user.private_key_is_valid)
+	{
+	  unserialize (m, unserialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
+	  e->gen_user.asn_user.private_key_is_valid = 1;
+	}
     }
 }
 
@@ -1590,7 +1610,10 @@ unserialize_asn_app_profile_for_user_group (serialize_main_t * m, va_list * va)
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
   u->is_private = unserialize_likely_small_unsigned_integer (m);
   if (! u->is_private)
-    unserialize (m, unserialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
+    {
+      unserialize (m, unserialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
+      u->gen_user.asn_user.private_key_is_valid = 1;
+    }
 }
 
 static void
@@ -1618,7 +1641,10 @@ unserialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   unserialize (m, unserialize_asn_app_location, &e->location);
   e->is_private = unserialize_likely_small_unsigned_integer (m);
   if (! e->is_private)
-    unserialize (m, unserialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
+    {
+      unserialize (m, unserialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
+      e->gen_user.asn_user.private_key_is_valid = 1;
+    }
 }
 
 static void
