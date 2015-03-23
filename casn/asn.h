@@ -688,6 +688,18 @@ asn_user_with_encrypt_key (asn_main_t * am, asn_rx_or_tx_t rt, u8 * encrypt_key)
 {
   uword * p;
 
+  /* Hash requires aligned address for key. */
+  union {
+    uword as_uword[crypto_box_public_key_bytes / sizeof (uword)];
+    u8 as_u8[crypto_box_public_key_bytes];
+  } aligned_encrypt_key;
+  if (pointer_to_uword (encrypt_key) % 2)
+    {
+      memcpy (aligned_encrypt_key.as_u8, encrypt_key, sizeof (aligned_encrypt_key.as_u8));
+      encrypt_key = aligned_encrypt_key.as_u8;
+    }
+  ASSERT (pointer_to_uword (encrypt_key) % 2 == 0);
+
   if (am->user_ref_by_public_encrypt_key[rt]
       && (p = hash_get_mem (am->user_ref_by_public_encrypt_key[rt], encrypt_key)))
     return asn_user_by_ref_as_uword (p[0]);
