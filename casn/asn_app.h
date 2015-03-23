@@ -320,6 +320,9 @@ always_inline void asn_app_user_free (asn_app_user_t * u)
 typedef struct {
   asn_app_gen_user_t gen_user;
 
+  /* Private versus public group. */
+  u32 is_private : 1;
+
   /* Hash of user indices that are in this group. */
   uword * group_users;
 } asn_app_user_group_t;
@@ -603,5 +606,6 @@ asn_app_send_invitation_message_to_user (asn_app_main_t * app_main,
 
 clib_error_t * asn_app_find_existing_place_with_location (asn_app_main_t * am, asn_app_location_t * location);
 clib_error_t * asn_app_check_in_at_location (asn_app_main_t * am, asn_app_location_t * location, u8 * check_in_message);
+clib_error_t * asn_app_share_private_key_with_user (asn_app_main_t * am, asn_user_t * private_key_asn_user, asn_user_t * to_asn_user);
 
 #endif /* included_asn_app_h */

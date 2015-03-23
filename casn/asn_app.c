@@ -1575,6 +1575,9 @@ serialize_asn_app_profile_for_user_group (serialize_main_t * m, va_list * va)
   asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_user_group];
   serialize_magic (m, ut->user_type.name, strlen (ut->user_type.name));
   serialize (m, serialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+  serialize_likely_small_unsigned_integer (m, u->is_private);
+  if (! u->is_private)
+    serialize (m, serialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
 }
 
 static void
@@ -1585,6 +1588,9 @@ unserialize_asn_app_profile_for_user_group (serialize_main_t * m, va_list * va)
   asn_app_user_type_t * ut = &am->user_types[ASN_APP_USER_TYPE_user_group];
   unserialize_check_magic (m, ut->user_type.name, strlen (ut->user_type.name), "asn_app_user_group_for_profile");
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &u->gen_user);
+  u->is_private = unserialize_likely_small_unsigned_integer (m);
+  if (! u->is_private)
+    unserialize (m, unserialize_asn_private_keys, &u->gen_user.asn_user.crypto_keys.private);
 }
 
 static void
@@ -1597,6 +1603,8 @@ serialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   serialize (m, serialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   serialize (m, serialize_asn_app_location, &e->location);
   serialize_likely_small_unsigned_integer (m, e->is_private);
+  if (! e->is_private)
+    serialize (m, serialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
 }
 
 static void
@@ -1609,6 +1617,8 @@ unserialize_asn_app_profile_for_event (serialize_main_t * m, va_list * va)
   unserialize (m, unserialize_asn_app_profile_for_gen_user, ut, &e->gen_user);
   unserialize (m, unserialize_asn_app_location, &e->location);
   e->is_private = unserialize_likely_small_unsigned_integer (m);
+  if (! e->is_private)
+    unserialize (m, unserialize_asn_private_keys, &e->gen_user.asn_user.crypto_keys.private);
 }
 
 static void
@@ -2788,6 +2798,21 @@ asn_app_message_type_t asn_app_private_key_message_type = {
   .did_receive_message = asn_app_did_receive_private_key_message,
 };
 CLIB_INIT_ADD (asn_app_message_type_t, asn_app_private_key_message_type);
+
+clib_error_t * asn_app_share_private_key_with_user (asn_app_main_t * am, asn_user_t * private_key_asn_user, asn_user_t * to_asn_user)
+{
+  asn_app_gen_user_t * to_gen_user = CONTAINER_OF (to_asn_user, asn_app_gen_user_t, asn_user);
+  clib_error_t * error = 0;
+  asn_app_private_key_message_t * m;
+
+  if (! private_key_asn_user->private_key_is_valid)
+    return clib_error_return (0, "private key is not valid for this user");
+
+  m = asn_app_new_message_with_type (&to_gen_user->user_messages, &asn_app_private_key_message_type);
+  m->private_keys = private_key_asn_user->crypto_keys.private;
+  error = asn_app_send_message_to_user (am, to_asn_user, &m->header);
+  return error;
+}
 
 asn_blob_type_t asn_app_user_friends_blob_type = {
   .path = "user_friends",
