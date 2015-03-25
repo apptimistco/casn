@@ -234,6 +234,8 @@ typedef struct {
   /* Pool serialize/unserialize functions. */
   serialize_function_t * serialize_pool_users, * unserialize_pool_users;
 
+  format_function_t * format_user;
+
   /* Called when exec newuser successfully completes. */
   void (* did_set_user_keys) (struct asn_user_t * au);
 
@@ -791,7 +793,7 @@ clib_error_t * asn_poll_for_input (asn_main_t * am, f64 timeout);
 clib_error_t * asn_mark_position (asn_main_t * am, asn_socket_t * as, asn_position_on_earth_t pos);
 void asn_mark_position_for_all_logged_in_clients (asn_main_t * am, asn_position_on_earth_t pos);
 
-format_function_t format_asn_user_type, format_asn_user_mark_response, format_asn_user_key, format_asn_service_key;
+format_function_t format_asn_user_type, format_asn_user_mark_response, format_asn_user_key, format_asn_service_key, format_asn_user_with_key;
 serialize_function_t serialize_asn_main, unserialize_asn_main;
 serialize_function_t serialize_asn_user, unserialize_asn_user;
 serialize_function_t serialize_asn_user_type, unserialize_asn_user_type;

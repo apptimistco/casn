@@ -396,6 +396,22 @@ u8 * format_asn_service_key (u8 * s, va_list * va)
   return format (s, "%U", format_hex_bytes, am->server_keys.public.encrypt_key, sizeof (am->server_keys.public.encrypt_key));
 }
 
+u8 * format_asn_user_with_key (u8 * s, va_list * va)
+{
+  asn_main_t * am = va_arg (*va, asn_main_t *);
+  u8 * key = va_arg (*va, u8 *);
+  asn_user_t * au = asn_user_with_encrypt_key (am, ASN_TX, key);
+  s = format (s, "%U", format_hex_bytes, key, 8);
+  if (au)
+    {
+      asn_user_type_t * ut = pool_elt (asn_user_type_pool, au->user_type_index);
+      s = format (s, " %s", ut->name);
+      if (ut->format_user)
+        s = format (s, ": %U", ut->format_user, (void *) au - ut->user_type_offset_of_asn_user);
+    }
+  return s;
+}
+
 static void
 asn_pdu_sync_overflow (asn_pdu_t * p)
 {
@@ -850,6 +866,7 @@ static u8 * format_asn_time_stamp (u8 * s, va_list * va)
 
 static u8 * format_asn_ack_pdu (u8 * s, va_list * va)
 {
+  CLIB_UNUSED (asn_main_t * am) = va_arg (*va, asn_main_t *);
   asn_pdu_ack_t * ack = va_arg (*va, asn_pdu_ack_t *);
   u32 n_bytes = va_arg (*va, u32);
   uword indent = format_get_indent (s);
@@ -925,15 +942,16 @@ asn_socket_rx_blob_pdu (asn_main_t * am,
 
 static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
 {
+  asn_main_t * am = va_arg (*va, asn_main_t *);
   asn_pdu_blob_t * blob = va_arg (*va, asn_pdu_blob_t *);
   u32 n_bytes = va_arg (*va, u32);
   u32 n_bytes_in_blob_contents = n_bytes - sizeof (blob[0]) - blob->n_name_bytes;
   uword indent = format_get_indent (s);
 
-  s = format (s, "owner %U\n%Uauthor %U\n%Utime %U",
-	      format_hex_bytes, blob->owner, sizeof (blob->owner),
+  s = format (s, "owner  %U\n%Uauthor %U\n%Utime %U",
+              format_asn_user_with_key, am, blob->owner,
               format_white_space, indent,
-	      format_hex_bytes, blob->author, sizeof (blob->author),
+              format_asn_user_with_key, am, blob->author,
               format_white_space, indent,
 	      format_asn_time_stamp, blob->time_stamp_in_nsec_from_1970);
 
@@ -959,7 +977,12 @@ static u8 * format_asn_blob_pdu (u8 * s, va_list * va)
   asn_socket_rx_##f##_pdu (asn_main_t * am, asn_socket_t * as, asn_pdu_header_t * h, u32 n_bytes_in_pdu) \
   { ASSERT (0); return 0; }                                             \
   static u8 * format_asn_##f##_pdu (u8 * s, va_list * va)               \
-  { return s; }
+  {                                                                     \
+    CLIB_UNUSED (asn_main_t * am) = va_arg (*va, asn_main_t *);         \
+    CLIB_UNUSED (asn_pdu_blob_t * blob) = va_arg (*va, asn_pdu_blob_t *); \
+    CLIB_UNUSED (u32 n_bytes) = va_arg (*va, u32);                      \
+    return s;                                                           \
+  }
 
 _ (exec)
 _ (login)
@@ -973,6 +996,7 @@ _ (index)
 
 u8 * format_asn_pdu (u8 * s, va_list * va)
 {
+  asn_main_t * am = va_arg (*va, asn_main_t *);
   asn_pdu_header_t * h = va_arg (*va, asn_pdu_header_t *);
   u32 n_bytes = va_arg (*va, u32);
   uword indent = format_get_indent (s);
@@ -988,7 +1012,7 @@ u8 * format_asn_pdu (u8 * s, va_list * va)
 
 #define _(f,n) case ASN_PDU_##f:                                \
       s = format (s, "\n%U%U", format_white_space, indent,      \
-                  format_asn_##f##_pdu, h, n_bytes);            \
+                  format_asn_##f##_pdu, am, h, n_bytes);         \
       break;
 
       foreach_asn_pdu_id;
@@ -1085,7 +1109,7 @@ asn_main_rx_frame_payload (websocket_main_t * wsm, websocket_socket_t * ws, u8 *
   asn_pdu_header_t * h = (void *) as->rx_pdu;
 
   if (am->verbose)
-    clib_warning ("%U", format_asn_pdu, h, vec_len (as->rx_pdu));
+    clib_warning ("%U", format_asn_pdu, am, h, vec_len (as->rx_pdu));
 
   switch (h->id)
     {

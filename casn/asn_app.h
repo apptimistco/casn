@@ -60,11 +60,17 @@ typedef struct {
 typedef struct {
   char * name;
   u32 index;
-  u32 was_registered;
+
+  u8 was_registered;
+
+  /* Non-zero means this message type is shown to user via user interface. */
+  u8 for_display;
 
   u32 user_msg_n_bytes;
   u32 user_msg_offset_of_message_header;
   serialize_function_t * serialize, * unserialize;
+
+  format_function_t * format_message;
 
   void (* did_receive_message) (struct asn_app_main_t * am, asn_user_t * au, asn_app_message_header_t * msg);
 
@@ -99,15 +105,18 @@ uword asn_app_register_message_type (asn_app_message_type_t * t);
 typedef struct {
   void ** message_pool_by_type;
   mhash_t message_ref_by_time_stamp;
-  asn_app_message_header_t most_recent_msg_header;
-  u32 * user_pairs;
+  asn_app_message_header_t most_recent_msg_header_for_display;
+  u32 * message_user_pair_indices_for_tx;
 } asn_app_user_messages_t;
 
 void asn_app_user_messages_free (asn_app_user_messages_t * m);
 
 always_inline uword
-asn_app_user_messages_is_empty (asn_app_user_messages_t * m)
-{ return m->most_recent_msg_header.time_stamp_in_nsec_from_1970 == 0; }
+asn_app_user_message_count_with_type (asn_app_user_messages_t * m, asn_app_message_type_t * t)
+{
+  void * pool = t->index < vec_len (m->message_pool_by_type) ? m->message_pool_by_type[t->index] : 0;
+  return pool_elts (pool);
+}
 
 always_inline void *
 asn_app_message_header_for_ref_helper (asn_app_user_messages_t * um, asn_app_message_ref_t * ref,
@@ -161,22 +170,16 @@ asn_app_free_message_with_type (asn_app_user_messages_t * um, asn_app_message_ty
   pool_put_index (pool, h->ref.pool_index);
 }
 
-typedef union {
-  struct {
-    u8 src[crypto_box_public_key_bytes];
-    u8 dst[crypto_box_public_key_bytes];
-  };
-  uword as_uword[2 * crypto_box_public_key_bytes / sizeof (uword)];
+typedef struct {
+  u8 src[crypto_box_public_key_bytes];
+  u8 dst[crypto_box_public_key_bytes];
 } asn_app_message_public_key_pair_t;
 
 typedef struct {
   asn_app_message_public_key_pair_t public_key_pair;
 
   /* Random ephemeral private key to use for this destination or source. */
-  union {
-    u8 src_private_key[crypto_box_private_key_bytes];
-    u8 dst_private_key[crypto_box_private_key_bytes];
-  };
+  u8 private_key[crypto_box_private_key_bytes];
 
   /* src -> dst shared secret. */
   u8 shared_secret[crypto_box_shared_secret_bytes];
