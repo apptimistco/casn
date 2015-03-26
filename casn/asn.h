@@ -44,13 +44,31 @@ typedef struct {
 } asn_crypto_state_t;
 
 always_inline void
-asn_crypto_increment_nonce (u8 * nonce, u32 increment)
+asn_crypto_increment_nonce_with_size (u8 * nonce, u32 n_nonce_bytes, u32 increment)
 {
   u32 u = increment;
   i32 i;
-  for (i = crypto_box_nonce_bytes - 1; i >= 0; i--)
+  for (i = n_nonce_bytes - 1; i >= 0; i--)
     {
       u += nonce[i];
+      nonce[i] = u;
+      u >>= BITS (nonce[i]);
+    }
+}
+
+always_inline void
+asn_crypto_increment_nonce (u8 * nonce, u32 increment)
+{ return asn_crypto_increment_nonce_with_size (nonce, crypto_box_nonce_bytes, increment); }
+
+always_inline void
+asn_crypto_add_to_nonce (u8 * nonce, u8 * add, u32 n_add_bytes)
+{
+  u32 u = 0;
+  i32 i, j;
+  ASSERT (n_add_bytes <= crypto_box_nonce_bytes);
+  for (i = crypto_box_nonce_bytes - 1, j = n_add_bytes - 1; i >= 0; i--, j--)
+    {
+      u += nonce[i] + (j >= 0 ? add[j] : 0);
       nonce[i] = u;
       u >>= BITS (nonce[i]);
     }

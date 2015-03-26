@@ -184,8 +184,9 @@ typedef struct {
   /* src -> dst shared secret. */
   u8 shared_secret[crypto_box_shared_secret_bytes];
 
-  /* src public -> owner private shared secret. */
-  u8 nonce[crypto_box_nonce_bytes];
+  /* Nonce for message is initial nonce plus sequence number. */
+  u8 sequence_number[8];
+  u8 initial_nonce[crypto_box_nonce_bytes];
 
   u32 index;
 } asn_app_message_user_pair_t;
