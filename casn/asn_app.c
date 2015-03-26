@@ -432,8 +432,8 @@ static void
 serialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
 {
   asn_app_attribute_main_t * am = va_arg (*va, asn_app_attribute_main_t *);
-  serialize_likely_small_unsigned_integer (m, vec_len (am->attributes));
   asn_app_attribute_t * a;
+  serialize_likely_small_unsigned_integer (m, vec_len (am->attributes));
   vec_foreach (a, am->attributes)
     {
       asn_app_attribute_type_t value_type = asn_app_attribute_value_type (a);
@@ -456,9 +456,10 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
   asn_app_attribute_main_t * am = va_arg (*va, asn_app_attribute_main_t *);
   asn_app_attribute_t * a;
   u32 n_attrs = unserialize_likely_small_unsigned_integer (m);
-  u32 i;
+  u32 ai;
+
   vec_resize (am->attribute_map_for_unserialize, n_attrs);
-  for (i = 0; i < n_attrs; i++)
+  for (ai = 0; ai < n_attrs; ai++)
     {
       u8 * name;
       uword * p;
@@ -467,19 +468,19 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
         serialize_error_return (m, "unknown attribute named `%v'", name);
       vec_free (name);
       a = vec_elt_at_index (am->attributes, *p);
-      am->attribute_map_for_unserialize[i] = a->index;
+      am->attribute_map_for_unserialize[ai] = a->index;
       if (asn_app_attribute_is_oneof (a))
         {
-          uword n_oneof_values, i;
+          uword n_oneof_values, vi;
           a->oneof_value_type_for_unserialize = unserialize_likely_small_unsigned_integer (m);
           n_oneof_values = unserialize_likely_small_unsigned_integer (m);
-          for (i = 0; i < n_oneof_values; i++)
+          for (vi = 0; vi < n_oneof_values; vi++)
             {
               u32 oi;
               vec_unserialize (m, &name, unserialize_vec_8);
 
 	      /* One of value with index zero is always zero. */
-	      if (i == 0 && vec_len (name) == 0)
+	      if (vi == 0 && vec_len (name) == 0)
 		{
 		  vec_free (name);
 		  continue;
@@ -495,8 +496,8 @@ unserialize_asn_app_attribute_main (serialize_main_t * m, va_list * va)
                   oi = p[0];
                   vec_free (name);
                 }
-              vec_validate (a->oneof_map_for_unserialize, i);
-              a->oneof_map_for_unserialize[i] = oi;
+              vec_validate (a->oneof_map_for_unserialize, vi);
+              a->oneof_map_for_unserialize[vi] = oi;
             }
         }
       a->value_is_valid_bitmap = unserialize_bitmap (m);
